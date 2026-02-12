@@ -20,6 +20,40 @@ pub enum BackendEvent {
     Reset,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PttCommand {
+    Start,
+    Stop,
+    Toggle,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PttState {
+    Idle,
+    Armed,
+    Capturing,
+    Processing,
+    Error { message: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PttLevel {
+    pub rms: f32,
+    pub peak: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PttEvent {
+    StateChanged { state: PttState },
+    Level { level: PttLevel },
+    CommandHandled { command: PttCommand },
+    Error { message: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelInstallStatus {
@@ -163,7 +197,10 @@ impl AppVersion {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppSettings, AppVersion, OverlayPosition, SettingsUpdate};
+    use super::{
+        AppSettings, AppVersion, OverlayPosition, PttCommand, PttEvent, PttLevel, PttState,
+        SettingsUpdate,
+    };
 
     #[test]
     fn version_string_formats() {
@@ -194,5 +231,36 @@ mod tests {
         assert_eq!(merged.latency_ms, 900);
         assert_eq!(merged.overlay_position, OverlayPosition::Floating);
         assert_eq!(merged.auto_export, settings.auto_export);
+    }
+
+    #[test]
+    fn ptt_command_roundtrips_json() {
+        let command = PttCommand::Toggle;
+        let json = serde_json::to_string(&command).expect("serialize ptt command");
+        let decoded: PttCommand = serde_json::from_str(&json).expect("deserialize ptt command");
+        assert_eq!(decoded, command);
+        assert_eq!(json, "\"toggle\"");
+    }
+
+    #[test]
+    fn ptt_event_roundtrips_json() {
+        let event = PttEvent::Level {
+            level: PttLevel {
+                rms: 0.2,
+                peak: 0.8,
+            },
+        };
+        let json = serde_json::to_string(&event).expect("serialize ptt event");
+        let decoded: PttEvent = serde_json::from_str(&json).expect("deserialize ptt event");
+        assert_eq!(decoded, event);
+        assert!(json.contains("level"));
+    }
+
+    #[test]
+    fn ptt_state_roundtrips_json() {
+        let state = PttState::Capturing;
+        let json = serde_json::to_string(&state).expect("serialize ptt state");
+        let decoded: PttState = serde_json::from_str(&json).expect("deserialize ptt state");
+        assert_eq!(decoded, state);
     }
 }

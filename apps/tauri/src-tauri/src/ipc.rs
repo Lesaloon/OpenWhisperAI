@@ -1,9 +1,14 @@
 use crate::logging::{logger, LogEntry};
 use crate::state::AppState;
-use shared_types::{AppSettings, BackendEvent, BackendState, ModelStatusPayload, SettingsUpdate};
+use shared_types::{
+    AppSettings, BackendEvent, BackendState, ModelStatusPayload, PttCommand, PttEvent,
+    SettingsUpdate,
+};
 
 pub const BACKEND_STATE_EVENT: &str = "backend-state";
 pub const MODEL_STATUS_EVENT: &str = "model-download-status";
+pub const PTT_COMMAND_EVENT: &str = "ptt-command";
+pub const PTT_EVENT: &str = "ptt-event";
 
 #[tauri::command]
 pub fn ipc_get_state(state: tauri::State<AppState>) -> BackendState {
@@ -77,4 +82,19 @@ pub fn ipc_set_models(
     };
     let _ = app.emit_all(MODEL_STATUS_EVENT, next.clone());
     Ok(next)
+}
+
+#[tauri::command]
+pub fn ipc_send_ptt_command(
+    command: PttCommand,
+    app: tauri::AppHandle,
+) -> Result<PttCommand, String> {
+    let _ = app.emit_all(PTT_COMMAND_EVENT, command.clone());
+    Ok(command)
+}
+
+#[tauri::command]
+pub fn ipc_emit_ptt_event(event: PttEvent, app: tauri::AppHandle) -> Result<PttEvent, String> {
+    let _ = app.emit_all(PTT_EVENT, event.clone());
+    Ok(event)
 }
