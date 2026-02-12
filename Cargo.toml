@@ -1,3 +1,7 @@
 [workspace]
-members = ["crates/shared-types", "apps/tauri/src-tauri"]
+members = [
+    "crates/shared-types",
+    "crates/transcribe-engine",
+    "apps/tauri/src-tauri",
+]
 resolver = "2"
