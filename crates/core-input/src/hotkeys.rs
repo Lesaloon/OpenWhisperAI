@@ -121,7 +121,7 @@ pub enum HotkeyError {
 
 #[derive(Debug, Default)]
 pub struct HotkeyManager {
-    bindings: HashMap<Hotkey, HotkeyBinding>,
+    bindings: HashMap<Hotkey, Vec<HotkeyBinding>>,
 }
 
 impl HotkeyManager {
@@ -139,17 +139,29 @@ impl HotkeyManager {
         trigger: HotkeyTrigger,
         action: impl Into<String>,
     ) -> Option<HotkeyBinding> {
-        self.bindings.insert(
-            hotkey,
-            HotkeyBinding {
-                action: action.into(),
-                trigger,
-            },
-        )
+        let bindings = self.bindings.entry(hotkey).or_default();
+        let binding = HotkeyBinding {
+            action: action.into(),
+            trigger,
+        };
+
+        if let Some(index) = bindings
+            .iter()
+            .position(|existing| existing.trigger == trigger)
+        {
+            let previous = bindings.remove(index);
+            bindings.push(binding);
+            return Some(previous);
+        }
+
+        bindings.push(binding);
+        None
     }
 
     pub fn unregister(&mut self, hotkey: &Hotkey) -> Option<HotkeyBinding> {
-        self.bindings.remove(hotkey)
+        self.bindings
+            .remove(hotkey)
+            .and_then(|mut bindings| bindings.pop())
     }
 
     pub fn resolve(&self, event: &HotkeyEvent) -> Option<&str> {
@@ -157,10 +169,12 @@ impl HotkeyManager {
             key: event.key,
             modifiers: event.modifiers,
         };
-        self.bindings
-            .get(&hotkey)
-            .filter(|binding| trigger_matches(binding.trigger, event.state))
-            .map(|binding| binding.action.as_str())
+        self.bindings.get(&hotkey).and_then(|bindings| {
+            bindings
+                .iter()
+                .find(|binding| trigger_matches(binding.trigger, event.state))
+                .map(|binding| binding.action.as_str())
+        })
     }
 }
 
@@ -474,6 +488,32 @@ mod tests {
 
         assert_eq!(manager.resolve(&pressed_event), None);
         assert_eq!(manager.resolve(&released_event), Some("release-only"));
+    }
+
+    #[test]
+    fn hotkey_manager_supports_multiple_triggers() {
+        let mut manager = HotkeyManager::new();
+        let hotkey = Hotkey {
+            key: HotkeyKey::F11,
+            modifiers: HotkeyModifiers::none(),
+        };
+
+        manager.register_with_trigger(hotkey, HotkeyTrigger::Pressed, "start");
+        manager.register_with_trigger(hotkey, HotkeyTrigger::Released, "stop");
+
+        let pressed_event = HotkeyEvent {
+            key: HotkeyKey::F11,
+            modifiers: HotkeyModifiers::none(),
+            state: HotkeyState::Pressed,
+        };
+        let released_event = HotkeyEvent {
+            key: HotkeyKey::F11,
+            modifiers: HotkeyModifiers::none(),
+            state: HotkeyState::Released,
+        };
+
+        assert_eq!(manager.resolve(&pressed_event), Some("start"));
+        assert_eq!(manager.resolve(&released_event), Some("stop"));
     }
 
     #[test]
