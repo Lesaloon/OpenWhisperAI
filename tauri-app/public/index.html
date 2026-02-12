@@ -41,10 +41,10 @@
           <div class="panel-body">
             <div class="setting-row">
               <div>
-                <h3>Input Device</h3>
+                <h3 id="inputDeviceLabel">Input Device</h3>
                 <p>Choose the microphone or audio bus to monitor.</p>
               </div>
-              <select class="select" id="inputDevice">
+              <select class="select" id="inputDevice" aria-labelledby="inputDeviceLabel">
                 <option>Studio Mic (USB)</option>
                 <option>Desk Mic (Line-in)</option>
                 <option>Virtual Audio Cable</option>
@@ -52,41 +52,50 @@
             </div>
             <div class="setting-row">
               <div>
-                <h3>Noise Reduction</h3>
+                <h3 id="noiseReductionLabel">Noise Reduction</h3>
                 <p>Reduce ambient noise before transcription.</p>
               </div>
               <label class="toggle">
-                <input type="checkbox" id="noiseReduction" checked />
+                <input type="checkbox" id="noiseReduction" checked aria-labelledby="noiseReductionLabel" />
                 <span class="toggle-track"></span>
               </label>
             </div>
             <div class="setting-row">
               <div>
-                <h3>Automatic Language Detect</h3>
+                <h3 id="autoLanguageLabel">Automatic Language Detect</h3>
                 <p>Let the model detect the language on the fly.</p>
               </div>
               <label class="toggle">
-                <input type="checkbox" id="autoLanguage" />
+                <input type="checkbox" id="autoLanguage" aria-labelledby="autoLanguageLabel" />
                 <span class="toggle-track"></span>
               </label>
             </div>
             <div class="setting-row">
               <div>
-                <h3>Streaming Latency</h3>
+                <h3 id="latencyLabel">Streaming Latency</h3>
                 <p>Trade precision for faster live results.</p>
               </div>
               <div class="slider">
-                <input type="range" id="latency" min="200" max="1200" step="100" value="600" />
-                <span class="slider-value" id="latencyValue">600ms</span>
+                <input
+                  type="range"
+                  id="latency"
+                  min="200"
+                  max="1200"
+                  step="100"
+                  value="600"
+                  aria-labelledby="latencyLabel"
+                  aria-describedby="latencyValue"
+                />
+                <span class="slider-value" id="latencyValue" aria-live="polite">600ms</span>
               </div>
             </div>
             <div class="setting-row">
               <div>
-                <h3>Auto Export</h3>
+                <h3 id="autoExportLabel">Auto Export</h3>
                 <p>Push completed sessions to your export folder.</p>
               </div>
               <label class="toggle">
-                <input type="checkbox" id="autoExport" checked />
+                <input type="checkbox" id="autoExport" checked aria-labelledby="autoExportLabel" />
                 <span class="toggle-track"></span>
               </label>
             </div>
@@ -104,7 +113,7 @@
                 <div class="pulse"></div>
                 <div>
                   <h3>Live Transcript</h3>
-                  <p id="overlayStatus">Listening · English</p>
+                  <p id="overlayStatus" aria-live="polite">Listening · English</p>
                 </div>
                 <button class="chip" id="overlayMode">Docked</button>
               </div>
@@ -114,38 +123,39 @@
                 <p class="muted"><span class="time">00:27</span> Capture summary enabled.</p>
               </div>
               <div class="overlay-footer">
-                <span class="badge" id="overlayHint">Auto punctuation on</span>
+                <span class="badge" id="overlayHint" aria-live="polite">Auto punctuation on</span>
                 <span class="badge">Auto highlight keywords</span>
+                <span class="sr-only" id="backendLog" aria-live="polite"></span>
               </div>
             </div>
             <div class="setting-row compact">
               <div>
-                <h3>Overlay Position</h3>
+                <h3 id="overlayPositionLabel">Overlay Position</h3>
                 <p>Move the overlay to match your workflow.</p>
               </div>
-              <div class="segmented" id="overlayPosition">
-                <button class="active" data-value="Docked">Docked</button>
-                <button data-value="Floating">Floating</button>
-                <button data-value="Compact">Compact</button>
+              <div class="segmented" id="overlayPosition" role="group" aria-labelledby="overlayPositionLabel">
+                <button class="active" data-value="Docked" type="button" aria-pressed="true">Docked</button>
+                <button data-value="Floating" type="button" aria-pressed="false">Floating</button>
+                <button data-value="Compact" type="button" aria-pressed="false">Compact</button>
               </div>
             </div>
             <div class="setting-row compact">
               <div>
-                <h3>Show Timestamps</h3>
+                <h3 id="showTimestampsLabel">Show Timestamps</h3>
                 <p>Display live timing next to each phrase.</p>
               </div>
               <label class="toggle">
-                <input type="checkbox" id="showTimestamps" checked />
+                <input type="checkbox" id="showTimestamps" checked aria-labelledby="showTimestampsLabel" />
                 <span class="toggle-track"></span>
               </label>
             </div>
             <div class="setting-row compact">
               <div>
-                <h3>Auto Punctuation</h3>
+                <h3 id="autoPunctuationLabel">Auto Punctuation</h3>
                 <p>Automatically insert punctuation for readability.</p>
               </div>
               <label class="toggle">
-                <input type="checkbox" id="autoPunctuation" checked />
+                <input type="checkbox" id="autoPunctuation" checked aria-labelledby="autoPunctuationLabel" />
                 <span class="toggle-track"></span>
               </label>
             </div>
@@ -169,6 +179,7 @@
           </div>
           <div class="panel-body">
             <div class="hotkey-search">
+              <label class="sr-only" for="hotkeySearch">Search hotkeys</label>
               <input type="search" placeholder="Search hotkeys" id="hotkeySearch" />
               <span class="chip">macOS</span>
               <span class="chip">Windows</span>
