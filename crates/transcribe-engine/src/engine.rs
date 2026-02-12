@@ -92,6 +92,51 @@ impl<B: WhisperBindings> TranscriptionEngine for WhisperCppEngine<B> {
     }
 }
 
+pub struct TranscriptionWrapper<B: WhisperBindings = WhisperCppBindings> {
+    engine: Option<WhisperCppEngine<B>>,
+}
+
+impl TranscriptionWrapper<WhisperCppBindings> {
+    pub fn load(manager: &ModelManager, model_id: ModelId) -> Result<Self, EngineError> {
+        Self::with_bindings(manager, model_id)
+    }
+}
+
+impl<B: WhisperBindings> TranscriptionWrapper<B> {
+    pub fn with_bindings(manager: &ModelManager, model_id: ModelId) -> Result<Self, EngineError> {
+        let engine = match WhisperCppEngine::<B>::with_bindings(manager, model_id) {
+            Ok(engine) => Some(engine),
+            Err(EngineError::Binding(BindingError::Unavailable)) => None,
+            Err(err) => return Err(err),
+        };
+        Ok(Self { engine })
+    }
+
+    pub fn bindings_available(&self) -> bool {
+        self.engine.is_some()
+    }
+}
+
+impl<B: WhisperBindings> TranscriptionEngine for TranscriptionWrapper<B> {
+    fn transcribe(&self, audio: &[f32]) -> Result<TranscriptionResult, EngineError> {
+        if audio.is_empty() {
+            return Err(EngineError::EmptyAudio);
+        }
+        let empty_result = || {
+            Ok(TranscriptionResult {
+                text: String::new(),
+            })
+        };
+        match &self.engine {
+            Some(engine) => match engine.transcribe(audio) {
+                Err(EngineError::Binding(BindingError::Unavailable)) => empty_result(),
+                other => other,
+            },
+            None => empty_result(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +316,121 @@ mod tests {
             .transcribe(ModelId::Custom("cached".to_string()), &[0.2])
             .expect("transcribe again");
         assert_eq!(pipeline.downloader.calls.get(), 1);
+    }
+
+    #[test]
+    fn wrapper_falls_back_when_bindings_unavailable_at_load() {
+        struct UnavailableBindings;
+
+        impl WhisperBindings for UnavailableBindings {
+            type Context = MockContext;
+
+            fn init_from_file(_path: &std::path::Path) -> Result<Self::Context, BindingError> {
+                Err(BindingError::Unavailable)
+            }
+
+            fn transcribe(
+                _context: &Self::Context,
+                _audio: &[f32],
+            ) -> Result<String, BindingError> {
+                Err(BindingError::Unavailable)
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let spec =
+            ModelSpec::new(ModelId::Custom("wrapper".to_string()), "wrapper.bin").with_size(1);
+        manager.register_model(spec);
+        manager
+            .write_model_bytes(&ModelId::Custom("wrapper".to_string()), &[0u8])
+            .expect("write model");
+
+        let engine = TranscriptionWrapper::<UnavailableBindings>::with_bindings(
+            &manager,
+            ModelId::Custom("wrapper".to_string()),
+        )
+        .expect("wrapper loads");
+        assert!(!engine.bindings_available());
+        let result = engine.transcribe(&[0.1, 0.2]).expect("fallback transcribe");
+        assert_eq!(result.text, "");
+    }
+
+    #[test]
+    fn wrapper_falls_back_when_transcribe_unavailable() {
+        struct TranscribeUnavailableBindings;
+
+        impl WhisperBindings for TranscribeUnavailableBindings {
+            type Context = MockContext;
+
+            fn init_from_file(path: &std::path::Path) -> Result<Self::Context, BindingError> {
+                Ok(MockContext {
+                    _path: path.to_path_buf(),
+                })
+            }
+
+            fn transcribe(
+                _context: &Self::Context,
+                _audio: &[f32],
+            ) -> Result<String, BindingError> {
+                Err(BindingError::Unavailable)
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let spec =
+            ModelSpec::new(ModelId::Custom("wrapper".to_string()), "wrapper.bin").with_size(1);
+        manager.register_model(spec);
+        manager
+            .write_model_bytes(&ModelId::Custom("wrapper".to_string()), &[0u8])
+            .expect("write model");
+
+        let engine = TranscriptionWrapper::<TranscribeUnavailableBindings>::with_bindings(
+            &manager,
+            ModelId::Custom("wrapper".to_string()),
+        )
+        .expect("wrapper loads");
+        assert!(engine.bindings_available());
+        let result = engine.transcribe(&[0.1]).expect("fallback transcribe");
+        assert_eq!(result.text, "");
+    }
+
+    #[test]
+    fn wrapper_propagates_non_unavailable_errors() {
+        struct InitFailedBindings;
+
+        impl WhisperBindings for InitFailedBindings {
+            type Context = MockContext;
+
+            fn init_from_file(_path: &std::path::Path) -> Result<Self::Context, BindingError> {
+                Err(BindingError::InitFailed)
+            }
+
+            fn transcribe(
+                _context: &Self::Context,
+                _audio: &[f32],
+            ) -> Result<String, BindingError> {
+                Ok("should-not-run".to_string())
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let spec =
+            ModelSpec::new(ModelId::Custom("wrapper".to_string()), "wrapper.bin").with_size(1);
+        manager.register_model(spec);
+        manager
+            .write_model_bytes(&ModelId::Custom("wrapper".to_string()), &[0u8])
+            .expect("write model");
+
+        let result = TranscriptionWrapper::<InitFailedBindings>::with_bindings(
+            &manager,
+            ModelId::Custom("wrapper".to_string()),
+        );
+        assert!(matches!(
+            result,
+            Err(EngineError::Binding(BindingError::InitFailed))
+        ));
     }
 }

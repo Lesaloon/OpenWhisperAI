@@ -4,6 +4,7 @@ mod model;
 
 pub use bindings::{BindingError, WhisperBindings, WhisperCppBindings};
 pub use engine::{
-    EngineError, TranscriptionEngine, TranscriptionPipeline, TranscriptionResult, WhisperCppEngine,
+    EngineError, TranscriptionEngine, TranscriptionPipeline, TranscriptionResult,
+    TranscriptionWrapper, WhisperCppEngine,
 };
 pub use model::{FsDownloader, ModelDownloader, ModelError, ModelId, ModelManager, ModelSpec};
