@@ -1,5 +1,5 @@
 use crate::bindings::{BindingError, WhisperBindings, WhisperCppBindings};
-use crate::model::{FsDownloader, ModelDownloader, ModelId, ModelManager};
+use crate::model::{FsDownloader, ModelDownloader, ModelError, ModelId, ModelManager};
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
