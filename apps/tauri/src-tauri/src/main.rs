@@ -29,7 +29,7 @@ fn main() {
             let app_state = app.state::<state::AppState>();
             let backend_state = app_state.lock_orchestrator().current_state();
             let models = app_state.lock_models().snapshot();
-            let ptt_state = app_state.lock_ptt().current_state();
+            let ptt_state = app_state.ptt_state();
             let _ = app.emit_all(BACKEND_STATE_EVENT, backend_state);
             let _ = app.emit_all(MODEL_STATUS_EVENT, models);
             let _ = app.emit_all(PTT_STATE_EVENT, ptt_state);
