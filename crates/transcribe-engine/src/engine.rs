@@ -1,5 +1,5 @@
 use crate::bindings::{BindingError, WhisperBindings, WhisperCppBindings};
-use crate::model::{ModelError, ModelId, ModelManager};
+use crate::model::{FsDownloader, ModelDownloader, ModelId, ModelManager};
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +19,41 @@ pub enum EngineError {
 
 pub trait TranscriptionEngine {
     fn transcribe(&self, audio: &[f32]) -> Result<TranscriptionResult, EngineError>;
+}
+
+pub struct TranscriptionPipeline<
+    B: WhisperBindings = WhisperCppBindings,
+    D: ModelDownloader = FsDownloader,
+> {
+    manager: ModelManager,
+    downloader: D,
+    _marker: PhantomData<B>,
+}
+
+impl<B: WhisperBindings, D: ModelDownloader> TranscriptionPipeline<B, D> {
+    pub fn new(manager: ModelManager, downloader: D) -> Self {
+        Self {
+            manager,
+            downloader,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn transcribe(
+        &self,
+        model_id: ModelId,
+        audio: &[f32],
+    ) -> Result<TranscriptionResult, EngineError> {
+        if audio.is_empty() {
+            return Err(EngineError::EmptyAudio);
+        }
+        let model_path = self
+            .manager
+            .ensure_model_cached(&model_id, &self.downloader)?;
+        let context = B::init_from_file(&model_path)?;
+        let text = B::transcribe(&context, audio)?;
+        Ok(TranscriptionResult { text })
+    }
 }
 
 pub struct WhisperCppEngine<B: WhisperBindings = WhisperCppBindings> {
@@ -61,12 +96,34 @@ impl<B: WhisperBindings> TranscriptionEngine for WhisperCppEngine<B> {
 mod tests {
     use super::*;
     use crate::bindings::BindingError;
-    use crate::model::{ModelManager, ModelSpec};
+    use crate::model::{ModelDownloader, ModelError, ModelManager, ModelSpec};
+    use std::cell::Cell;
 
     struct MockBindings;
 
     struct MockContext {
         _path: std::path::PathBuf,
+    }
+
+    struct MockDownloader {
+        bytes: Vec<u8>,
+        calls: Cell<usize>,
+    }
+
+    impl MockDownloader {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                bytes,
+                calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl ModelDownloader for MockDownloader {
+        fn download(&self, _url: &str) -> Result<Vec<u8>, ModelError> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(self.bytes.clone())
+        }
     }
 
     impl WhisperBindings for MockBindings {
@@ -177,5 +234,42 @@ mod tests {
             result,
             Err(EngineError::Binding(BindingError::Unavailable))
         ));
+    }
+
+    #[test]
+    fn pipeline_downloads_model_and_transcribes() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let spec = ModelSpec::new(ModelId::Custom("pipeline".to_string()), "pipeline.bin")
+            .with_download_url("file://mock")
+            .with_size(4);
+        manager.register_model(spec);
+
+        let downloader = MockDownloader::new(vec![0u8; 4]);
+        let pipeline = TranscriptionPipeline::<MockBindings, _>::new(manager, downloader);
+        let result = pipeline
+            .transcribe(ModelId::Custom("pipeline".to_string()), &[0.1])
+            .expect("transcribe");
+        assert_eq!(result.text, "mock transcript");
+    }
+
+    #[test]
+    fn pipeline_reuses_cached_model() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let spec = ModelSpec::new(ModelId::Custom("cached".to_string()), "cached.bin")
+            .with_download_url("file://mock")
+            .with_size(2);
+        manager.register_model(spec);
+
+        let downloader = MockDownloader::new(vec![1u8, 2u8]);
+        let pipeline = TranscriptionPipeline::<MockBindings, _>::new(manager, downloader);
+        let _ = pipeline
+            .transcribe(ModelId::Custom("cached".to_string()), &[0.1])
+            .expect("transcribe");
+        let _ = pipeline
+            .transcribe(ModelId::Custom("cached".to_string()), &[0.2])
+            .expect("transcribe again");
+        assert_eq!(pipeline.downloader.calls.get(), 1);
     }
 }
