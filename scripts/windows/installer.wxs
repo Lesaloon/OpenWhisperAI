@@ -6,7 +6,7 @@
     Manufacturer="$(var.Manufacturer)"
     Version="$(var.ProductVersion)"
     UpgradeCode="$(var.UpgradeCode)">
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
@@ -17,7 +17,7 @@
 
   <Fragment>
     <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="ProgramFilesFolder">
+      <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="$(var.ProductName)" />
       </Directory>
     </Directory>
@@ -25,7 +25,7 @@
 
   <Fragment>
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
-      <Component Id="MainExecutable" Guid="*">
+      <Component Id="MainExecutable" Guid="*" Win64="yes">
         <File Id="MainExe" Source="$(var.SourceDir)\$(var.ExeName)" KeyPath="yes" />
       </Component>
     </ComponentGroup>
