@@ -1,6 +1,7 @@
 use crate::logging::{logger, LogEntry};
 use crate::state::AppState;
 use shared_types::{AppSettings, BackendEvent, BackendState, ModelStatusPayload, SettingsUpdate};
+use tauri::Manager;
 
 pub const BACKEND_STATE_EVENT: &str = "backend-state";
 pub const MODEL_STATUS_EVENT: &str = "model-download-status";

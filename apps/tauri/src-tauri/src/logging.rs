@@ -80,20 +80,24 @@ impl BridgeLogger {
         guard.entries()
     }
 
-    fn push_entry(&self, entry: LogEntry) {
-        {
-            let mut guard = self.store.lock().expect("log store lock poisoned");
-            guard.push(entry.clone());
-        }
-
+    pub fn emit_event<T: Serialize>(&self, event: &str, payload: &T) {
         if let Some(handle) = self
             .handle
             .read()
             .expect("log handle lock poisoned")
             .as_ref()
         {
-            let _ = handle.emit_all(LOG_EVENT, entry);
+            let _ = handle.emit_all(event, payload);
         }
+    }
+
+    fn push_entry(&self, entry: LogEntry) {
+        {
+            let mut guard = self.store.lock().expect("log store lock poisoned");
+            guard.push(entry.clone());
+        }
+
+        self.emit_event(LOG_EVENT, &entry);
     }
 }
 
@@ -134,6 +138,12 @@ pub fn init_logging() {
 
 pub fn logger() -> &'static BridgeLogger {
     LOGGER.get().expect("logger not initialized")
+}
+
+pub fn emit_app_event<T: Serialize>(event: &str, payload: &T) {
+    if let Some(logger) = LOGGER.get() {
+        logger.emit_event(event, payload);
+    }
 }
 
 pub fn attach_app_handle(handle: AppHandle) {
