@@ -19,6 +19,7 @@ pub const PTT_STATE_EVENT: &str = "ptt_state";
 pub const PTT_LEVEL_EVENT: &str = "ptt_level";
 pub const PTT_TRANSCRIPTION_EVENT: &str = "ptt_transcription";
 pub const PTT_ERROR_EVENT: &str = "ptt_error";
+const TARGET_SAMPLE_RATE: u32 = 16_000;
 
 #[derive(Clone)]
 pub struct PttHandle {
@@ -543,6 +544,13 @@ impl<B: AudioBackend> PttController<B> {
             HotkeyState::Released => {
                 self.set_state(PttState::Processing);
                 let audio = self.capture.take_audio().map_err(|err| err.to_string())?;
+                let (sample_rate, channels) = self
+                    .capture
+                    .audio()
+                    .selected_device()
+                    .map(|device| (device.sample_rate, device.channels))
+                    .unwrap_or((TARGET_SAMPLE_RATE, 1));
+                let audio = resample_to_16k_mono(audio, sample_rate, channels);
                 Ok(Some(TranscriptionWork {
                     audio,
                     transcriber: Arc::clone(&self.transcriber),
@@ -601,6 +609,58 @@ struct TranscriptionWork {
     transcriber: Arc<dyn Transcriber>,
     injector: Arc<dyn TextInjector>,
     auto_export: bool,
+}
+
+fn resample_to_16k_mono(audio: Vec<f32>, sample_rate: u32, channels: u16) -> Vec<f32> {
+    let mono = if channels <= 1 {
+        audio
+    } else {
+        downmix_to_mono(audio, channels)
+    };
+
+    if mono.is_empty() || sample_rate == TARGET_SAMPLE_RATE || sample_rate == 0 {
+        return mono;
+    }
+
+    let target_len =
+        ((mono.len() as f64) * TARGET_SAMPLE_RATE as f64 / sample_rate as f64).round() as usize;
+    if target_len == 0 {
+        return Vec::new();
+    }
+
+    let step = sample_rate as f64 / TARGET_SAMPLE_RATE as f64;
+    let mut output = Vec::with_capacity(target_len);
+    for i in 0..target_len {
+        let src_pos = i as f64 * step;
+        let idx = src_pos.floor() as usize;
+        if idx >= mono.len() {
+            break;
+        }
+        let frac = (src_pos - idx as f64) as f32;
+        let next = if idx + 1 < mono.len() { idx + 1 } else { idx };
+        let sample = mono[idx] + (mono[next] - mono[idx]) * frac;
+        output.push(sample);
+    }
+
+    output
+}
+
+fn downmix_to_mono(audio: Vec<f32>, channels: u16) -> Vec<f32> {
+    let channels = channels as usize;
+    if channels == 0 {
+        return Vec::new();
+    }
+    let frames = audio.len() / channels;
+    let mut mono = Vec::with_capacity(frames);
+    for frame in 0..frames {
+        let offset = frame * channels;
+        let mut sum = 0.0;
+        for channel in 0..channels {
+            sum += audio[offset + channel];
+        }
+        mono.push(sum / channels as f32);
+    }
+    mono
 }
 
 fn register_hotkey_binding(manager: &mut HotkeyManager, hotkey: Hotkey) {
@@ -929,5 +989,22 @@ mod tests {
             .recv_timeout(Duration::from_millis(50))
             .expect("inject event");
         assert_eq!(injected, "hello world");
+    }
+
+    #[test]
+    fn resample_downmixes_stereo_to_mono() {
+        let audio = vec![1.0, -1.0, 0.5, 0.5];
+        let output = resample_to_16k_mono(audio, TARGET_SAMPLE_RATE, 2);
+        assert_eq!(output, vec![0.0, 0.5]);
+    }
+
+    #[test]
+    fn resample_linearly_interpolates() {
+        let audio = vec![0.0, 1.0, 0.0, -1.0, 0.0];
+        let output = resample_to_16k_mono(audio, 44_100, 1);
+        assert_eq!(output.len(), 2);
+        let expected = -0.75625_f32;
+        assert!((output[0] - 0.0).abs() < 1e-6);
+        assert!((output[1] - expected).abs() < 1e-4);
     }
 }
