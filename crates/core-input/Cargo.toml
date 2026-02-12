@@ -1,0 +1,12 @@
+[package]
+name = "core-input"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpal = "0.15"
+rdev = "0.5"
+thiserror = "1.0"
+
+[dev-dependencies]
+approx = "0.5"
