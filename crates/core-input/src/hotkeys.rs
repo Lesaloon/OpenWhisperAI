@@ -127,14 +127,17 @@ impl HotkeyManager {
 }
 
 pub struct HotkeyListenerHandle {
-    join_handle: std::thread::JoinHandle<()>,
+    join_handle: std::thread::JoinHandle<Result<(), HotkeyError>>,
 }
 
 impl HotkeyListenerHandle {
     pub fn join(self) -> Result<(), HotkeyError> {
-        self.join_handle
-            .join()
-            .map_err(|_| HotkeyError::Listener("listener thread panicked".to_string()))
+        match self.join_handle.join() {
+            Ok(result) => result,
+            Err(_) => Err(HotkeyError::Listener(
+                "listener thread panicked".to_string(),
+            )),
+        }
     }
 }
 
@@ -153,46 +156,57 @@ impl GlobalHotkeyListener {
         let (sender, receiver) = mpsc::channel();
         let manager = Arc::clone(&self.manager);
 
-        let join_handle = std::thread::spawn(move || {
-            let mut modifiers = ModifierState::default();
-            let handler = move |event: rdev::Event| match event.event_type {
-                rdev::EventType::KeyPress(key) => {
-                    if modifiers.update(key, true) {
-                        return;
-                    }
+        let handle = spawn_listener(manager, sender, |mut handler| {
+            rdev::listen(move |event| handler(event))
+                .map_err(|error| HotkeyError::Listener(format!("{error:?}")))
+        });
 
-                    if let Some(mapped) = map_key(key) {
-                        let event = HotkeyEvent {
-                            key: mapped,
-                            modifiers: modifiers.as_modifiers(),
-                        };
+        Ok((handle, receiver))
+    }
+}
 
-                        if let Ok(manager) = manager.lock() {
-                            if let Some(action) = manager.resolve(&event) {
-                                let _ = sender.send(HotkeyActionEvent {
-                                    action: action.to_string(),
-                                    hotkey: Hotkey {
-                                        key: event.key,
-                                        modifiers: event.modifiers,
-                                    },
-                                });
-                            }
+fn spawn_listener(
+    manager: Arc<Mutex<HotkeyManager>>,
+    sender: mpsc::Sender<HotkeyActionEvent>,
+    listen: impl FnOnce(Box<dyn FnMut(rdev::Event) + Send>) -> Result<(), HotkeyError> + Send + 'static,
+) -> HotkeyListenerHandle {
+    let join_handle = std::thread::spawn(move || {
+        let mut modifiers = ModifierState::default();
+        let mut handler = move |event: rdev::Event| match event.event_type {
+            rdev::EventType::KeyPress(key) => {
+                if modifiers.update(key, true) {
+                    return;
+                }
+
+                if let Some(mapped) = map_key(key) {
+                    let event = HotkeyEvent {
+                        key: mapped,
+                        modifiers: modifiers.as_modifiers(),
+                    };
+
+                    if let Ok(manager) = manager.lock() {
+                        if let Some(action) = manager.resolve(&event) {
+                            let _ = sender.send(HotkeyActionEvent {
+                                action: action.to_string(),
+                                hotkey: Hotkey {
+                                    key: event.key,
+                                    modifiers: event.modifiers,
+                                },
+                            });
                         }
                     }
                 }
-                rdev::EventType::KeyRelease(key) => {
-                    modifiers.update(key, false);
-                }
-                _ => {}
-            };
-
-            if let Err(error) = rdev::listen(handler) {
-                eprintln!("hotkey listener error: {error:?}");
             }
-        });
+            rdev::EventType::KeyRelease(key) => {
+                modifiers.update(key, false);
+            }
+            _ => {}
+        };
 
-        Ok((HotkeyListenerHandle { join_handle }, receiver))
-    }
+        listen(Box::new(move |event| handler(event)))
+    });
+
+    HotkeyListenerHandle { join_handle }
 }
 
 #[derive(Default)]
@@ -291,7 +305,10 @@ fn map_key(key: rdev::Key) -> Option<HotkeyKey> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Hotkey, HotkeyEvent, HotkeyKey, HotkeyManager, HotkeyModifiers};
+    use super::{
+        spawn_listener, Hotkey, HotkeyError, HotkeyEvent, HotkeyKey, HotkeyManager, HotkeyModifiers,
+    };
+    use std::sync::{mpsc, Arc, Mutex};
 
     #[test]
     fn hotkey_manager_resolves_event() {
@@ -347,5 +364,20 @@ mod tests {
         };
 
         assert_eq!(manager.resolve(&event), None);
+    }
+
+    #[test]
+    fn hotkey_listener_propagates_listen_error() {
+        let manager = Arc::new(Mutex::new(HotkeyManager::new()));
+        let (sender, _receiver) = mpsc::channel();
+        let handle = spawn_listener(manager, sender, |_handler| {
+            Err(HotkeyError::Listener("listen failed".to_string()))
+        });
+
+        let result = handle.join();
+
+        assert!(
+            matches!(result, Err(HotkeyError::Listener(message)) if message == "listen failed")
+        );
     }
 }

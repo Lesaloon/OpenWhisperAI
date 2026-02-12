@@ -41,6 +41,11 @@ pub trait AudioBackend: Send + Sync + 'static {
     ) -> Result<Self::Stream, AudioError>;
 }
 
+fn normalize_u16_sample(value: u16) -> f32 {
+    let midpoint = (u16::MAX as f32 + 1.0) / 2.0;
+    (value as f32 - midpoint) / midpoint
+}
+
 pub struct AudioCaptureService<B: AudioBackend> {
     backend: B,
     devices: Vec<AudioDevice>,
@@ -265,7 +270,7 @@ impl AudioBackend for CpalAudioBackend {
                     move |data: &[u16], _| {
                         let converted: Vec<f32> = data
                             .iter()
-                            .map(|value| *value as f32 / u16::MAX as f32 - 0.5)
+                            .map(|value| normalize_u16_sample(*value))
                             .collect();
                         on_samples(&converted);
                     },
@@ -282,7 +287,10 @@ impl AudioBackend for CpalAudioBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{AudioBackend, AudioCaptureService, AudioDevice, AudioError, AudioStream};
+    use super::{
+        normalize_u16_sample, AudioBackend, AudioCaptureService, AudioDevice, AudioError,
+        AudioStream,
+    };
     use crate::meter::LevelReading;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -405,5 +413,17 @@ mod tests {
         let service = AudioCaptureService::new(backend);
         let reading = service.level().expect("meter");
         assert_eq!(reading, LevelReading::silence());
+    }
+
+    #[test]
+    fn u16_normalization_centers_at_zero() {
+        let min = normalize_u16_sample(u16::MIN);
+        let mid = normalize_u16_sample(0x8000);
+        let max = normalize_u16_sample(u16::MAX);
+
+        assert!((min + 1.0).abs() < 1e-6);
+        assert!(mid.abs() < 1e-6);
+        assert!(max <= 1.0);
+        assert!(max > 0.99);
     }
 }
