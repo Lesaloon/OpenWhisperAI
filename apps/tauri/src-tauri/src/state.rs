@@ -1,3 +1,4 @@
+use crate::logging::emit_app_event;
 use shared_types::{
     AppSettings, BackendEvent, BackendState, ModelInstallStatus, ModelStatusItem,
     ModelStatusPayload, SettingsUpdate,
@@ -5,8 +6,10 @@ use shared_types::{
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard},
 };
+
+const BACKEND_STATE_EVENT: &str = "backend-state";
 
 pub struct StateMachine {
     state: BackendState,
@@ -41,6 +44,19 @@ impl StateMachine {
 
         self.state = next;
         Ok(self.state.clone())
+    }
+}
+
+pub trait BackendStateEmitter: Send + Sync {
+    fn emit_state(&self, state: &BackendState);
+}
+
+#[derive(Clone, Default)]
+pub struct AppStateEmitter;
+
+impl BackendStateEmitter for AppStateEmitter {
+    fn emit_state(&self, state: &BackendState) {
+        emit_app_event(BACKEND_STATE_EVENT, state);
     }
 }
 
@@ -88,6 +104,7 @@ fn load_settings(path: &Path) -> Result<AppSettings, String> {
 pub struct BackendOrchestrator {
     machine: StateMachine,
     settings: SettingsStore,
+    emitter: Option<Arc<dyn BackendStateEmitter>>,
 }
 
 impl BackendOrchestrator {
@@ -95,6 +112,15 @@ impl BackendOrchestrator {
         Self {
             machine: StateMachine::new(),
             settings: SettingsStore::new(settings_path),
+            emitter: Some(Arc::new(AppStateEmitter::default())),
+        }
+    }
+
+    pub fn with_emitter(settings_path: PathBuf, emitter: Arc<dyn BackendStateEmitter>) -> Self {
+        Self {
+            machine: StateMachine::new(),
+            settings: SettingsStore::new(settings_path),
+            emitter: Some(emitter),
         }
     }
 
@@ -103,7 +129,11 @@ impl BackendOrchestrator {
     }
 
     pub fn apply_event(&mut self, event: BackendEvent) -> Result<BackendState, String> {
-        self.machine.apply(event)
+        let next = self.machine.apply(event)?;
+        if let Some(emitter) = &self.emitter {
+            emitter.emit_state(&next);
+        }
+        Ok(next)
     }
 
     pub fn settings(&self) -> AppSettings {
@@ -196,7 +226,7 @@ pub fn default_settings_path(config_dir: Option<PathBuf>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     fn temp_settings_path() -> PathBuf {
         let stamp = std::time::SystemTime::now()
@@ -204,6 +234,30 @@ mod tests {
             .unwrap_or_default()
             .as_millis();
         std::env::temp_dir().join(format!("openwhisperai-settings-{stamp}.json"))
+    }
+
+    #[derive(Default)]
+    struct TestEmitter {
+        states: Mutex<Vec<BackendState>>,
+    }
+
+    impl TestEmitter {
+        fn states(&self) -> Vec<BackendState> {
+            self.states
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
+    }
+
+    impl BackendStateEmitter for TestEmitter {
+        fn emit_state(&self, state: &BackendState) {
+            let mut guard = self
+                .states
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.push(state.clone());
+        }
     }
 
     #[test]
@@ -275,6 +329,23 @@ mod tests {
     }
 
     #[test]
+    fn orchestrator_emits_state_changes() {
+        let path = temp_settings_path();
+        let emitter = Arc::new(TestEmitter::default());
+        let mut orchestrator = BackendOrchestrator::with_emitter(
+            path,
+            Arc::clone(&emitter) as Arc<dyn BackendStateEmitter>,
+        );
+
+        let next = orchestrator
+            .apply_event(BackendEvent::StartRecording)
+            .unwrap();
+
+        assert_eq!(next, BackendState::Recording);
+        assert_eq!(emitter.states(), vec![BackendState::Recording]);
+    }
+
+    #[test]
     fn lock_orchestrator_recovers_from_poison() {
         let path = temp_settings_path();
         let state = Arc::new(AppState::new(path));
@@ -304,7 +375,7 @@ mod tests {
             })
             .unwrap();
 
-        let reloaded = SettingsStore::new(path).settings();
+        let reloaded = SettingsStore::new(path.clone()).settings();
         assert_eq!(updated, reloaded);
         let _ = fs::remove_file(&path);
     }

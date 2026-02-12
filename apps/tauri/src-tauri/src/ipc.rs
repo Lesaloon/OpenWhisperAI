@@ -4,6 +4,7 @@ use shared_types::{
     AppSettings, BackendEvent, BackendState, ModelStatusPayload, PttCommand, PttEvent,
     SettingsUpdate,
 };
+use tauri::Manager;
 
 pub const BACKEND_STATE_EVENT: &str = "backend-state";
 pub const MODEL_STATUS_EVENT: &str = "model-download-status";
