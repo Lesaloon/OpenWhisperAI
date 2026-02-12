@@ -31,6 +31,7 @@ impl ModelId {
 pub struct ModelSpec {
     pub id: ModelId,
     pub filename: String,
+    pub download_url: Option<String>,
     pub sha256: Option<String>,
     pub size_bytes: Option<u64>,
 }
@@ -40,9 +41,15 @@ impl ModelSpec {
         Self {
             id,
             filename: filename.into(),
+            download_url: None,
             sha256: None,
             size_bytes: None,
         }
+    }
+
+    pub fn with_download_url(mut self, url: impl Into<String>) -> Self {
+        self.download_url = Some(url.into());
+        self
     }
 
     pub fn with_sha256(mut self, sha256: impl Into<String>) -> Self {
@@ -64,12 +71,29 @@ pub enum ModelError {
     InvalidFilename(String),
     #[error("model file not found at {0}")]
     MissingFile(String),
+    #[error("model download url missing for '{0}'")]
+    MissingDownloadUrl(String),
+    #[error("failed to download model from {0}")]
+    DownloadFailed(String),
     #[error("model size mismatch: expected {expected} bytes, got {actual} bytes")]
     SizeMismatch { expected: u64, actual: u64 },
     #[error("model checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
     #[error("io error while handling model file")]
     Io(#[from] std::io::Error),
+}
+
+pub trait ModelDownloader {
+    fn download(&self, url: &str) -> Result<Vec<u8>, ModelError>;
+}
+
+pub struct FsDownloader;
+
+impl ModelDownloader for FsDownloader {
+    fn download(&self, url: &str) -> Result<Vec<u8>, ModelError> {
+        let path = url.strip_prefix("file://").unwrap_or(url);
+        std::fs::read(path).map_err(|_| ModelError::DownloadFailed(url.to_string()))
+    }
 }
 
 pub struct ModelManager {
@@ -105,25 +129,43 @@ impl ModelManager {
             .ok_or_else(|| ModelError::UnregisteredModel(id.display_name()))?;
         validate_model_filename(&spec.filename)?;
         let path = self.root.join(&spec.filename);
-        if !path.exists() {
-            return Err(ModelError::MissingFile(path.display().to_string()));
+        verify_model_file(&path, spec)?;
+        Ok(path)
+    }
+
+    pub fn ensure_model_cached<D: ModelDownloader>(
+        &self,
+        id: &ModelId,
+        downloader: &D,
+    ) -> Result<PathBuf, ModelError> {
+        let spec = self
+            .registry
+            .get(id)
+            .ok_or_else(|| ModelError::UnregisteredModel(id.display_name()))?;
+        validate_model_filename(&spec.filename)?;
+        let path = self.root.join(&spec.filename);
+        match verify_model_file(&path, spec) {
+            Ok(()) => return Ok(path),
+            Err(ModelError::MissingFile(_))
+            | Err(ModelError::SizeMismatch { .. })
+            | Err(ModelError::ChecksumMismatch { .. }) => {}
+            Err(err) => return Err(err),
         }
-        let metadata = path.metadata()?;
-        if let Some(expected) = spec.size_bytes {
-            let actual = metadata.len();
-            if actual != expected {
-                return Err(ModelError::SizeMismatch { expected, actual });
-            }
+
+        let url = spec
+            .download_url
+            .as_ref()
+            .ok_or_else(|| ModelError::MissingDownloadUrl(id.display_name()))?;
+        let bytes = downloader.download(url)?;
+        verify_model_bytes(spec, &bytes)?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        if let Some(expected) = spec.sha256.as_ref() {
-            let actual = sha256_hex_from_file(&path)?;
-            if !expected.eq_ignore_ascii_case(&actual) {
-                return Err(ModelError::ChecksumMismatch {
-                    expected: expected.clone(),
-                    actual,
-                });
-            }
-        }
+        let tmp_path = path.with_extension("download");
+        let mut file = File::create(&tmp_path)?;
+        file.write_all(&bytes)?;
+        std::fs::rename(&tmp_path, &path)?;
         Ok(path)
     }
 
@@ -155,6 +197,54 @@ fn validate_model_filename(filename: &str) -> Result<(), ModelError> {
     Ok(())
 }
 
+fn verify_model_file(path: &Path, spec: &ModelSpec) -> Result<(), ModelError> {
+    if !path.exists() {
+        return Err(ModelError::MissingFile(path.display().to_string()));
+    }
+    let metadata = path.metadata()?;
+    if let Some(expected) = spec.size_bytes {
+        let actual = metadata.len();
+        if actual != expected {
+            return Err(ModelError::SizeMismatch { expected, actual });
+        }
+    }
+    if let Some(expected) = spec.sha256.as_ref() {
+        let actual = sha256_hex_from_file(path)?;
+        if !expected.eq_ignore_ascii_case(&actual) {
+            return Err(ModelError::ChecksumMismatch {
+                expected: expected.clone(),
+                actual,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn verify_model_bytes(spec: &ModelSpec, bytes: &[u8]) -> Result<(), ModelError> {
+    if let Some(expected) = spec.size_bytes {
+        let actual = bytes.len() as u64;
+        if actual != expected {
+            return Err(ModelError::SizeMismatch { expected, actual });
+        }
+    }
+    if let Some(expected) = spec.sha256.as_ref() {
+        let actual = sha256_hex(bytes);
+        if !expected.eq_ignore_ascii_case(&actual) {
+            return Err(ModelError::ChecksumMismatch {
+                expected: expected.clone(),
+                actual,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
 fn sha256_hex_from_file(path: &Path) -> Result<String, ModelError> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
@@ -172,11 +262,27 @@ fn sha256_hex_from_file(path: &Path) -> Result<String, ModelError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
-    fn sha256_hex(bytes: &[u8]) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        hex::encode(hasher.finalize())
+    struct MockDownloader {
+        bytes: Vec<u8>,
+        calls: Cell<usize>,
+    }
+
+    impl MockDownloader {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                bytes,
+                calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl ModelDownloader for MockDownloader {
+        fn download(&self, _url: &str) -> Result<Vec<u8>, ModelError> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(self.bytes.clone())
+        }
     }
 
     #[test]
@@ -210,6 +316,60 @@ mod tests {
             .ensure_model_available(&ModelId::Custom("checksum".to_string()))
             .expect("model should be valid");
         assert!(path.exists());
+    }
+
+    #[test]
+    fn model_manager_downloads_and_caches_model() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let bytes = b"cached whisper".to_vec();
+        let checksum = sha256_hex(&bytes);
+        let spec = ModelSpec::new(ModelId::Custom("cached".to_string()), "cached.bin")
+            .with_download_url("file://mock")
+            .with_sha256(checksum)
+            .with_size(bytes.len() as u64);
+        manager.register_model(spec);
+
+        let downloader = MockDownloader::new(bytes);
+        let path = manager
+            .ensure_model_cached(&ModelId::Custom("cached".to_string()), &downloader)
+            .expect("download model");
+        assert!(path.exists());
+        assert_eq!(downloader.calls.get(), 1);
+
+        let path_again = manager
+            .ensure_model_cached(&ModelId::Custom("cached".to_string()), &downloader)
+            .expect("cached model");
+        assert!(path_again.exists());
+        assert_eq!(downloader.calls.get(), 1);
+    }
+
+    #[test]
+    fn model_manager_requires_download_url() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let spec = ModelSpec::new(ModelId::Custom("missing-url".to_string()), "missing.bin");
+        manager.register_model(spec);
+
+        let downloader = MockDownloader::new(b"data".to_vec());
+        let result =
+            manager.ensure_model_cached(&ModelId::Custom("missing-url".to_string()), &downloader);
+        assert!(matches!(result, Err(ModelError::MissingDownloadUrl(_))));
+    }
+
+    #[test]
+    fn model_manager_rejects_invalid_download_bytes() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let spec = ModelSpec::new(ModelId::Custom("bad-download".to_string()), "bad.bin")
+            .with_download_url("file://mock")
+            .with_size(4);
+        manager.register_model(spec);
+
+        let downloader = MockDownloader::new(b"toolarge".to_vec());
+        let result =
+            manager.ensure_model_cached(&ModelId::Custom("bad-download".to_string()), &downloader);
+        assert!(matches!(result, Err(ModelError::SizeMismatch { .. })));
     }
 
     #[test]
