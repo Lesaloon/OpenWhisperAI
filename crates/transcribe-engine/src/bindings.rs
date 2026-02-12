@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BindingError {
@@ -16,6 +18,119 @@ pub trait WhisperBindings {
 }
 
 pub struct WhisperCppBindings;
+
+const WHISPER_SAMPLE_RATE: u32 = 16_000;
+const WHISPER_BITS_PER_SAMPLE: u16 = 16;
+
+fn resolve_whisper_bin() -> std::ffi::OsString {
+    std::env::var_os("WHISPER_CPP_BIN").unwrap_or_else(|| "whisper".into())
+}
+
+fn parse_cli_output(output: &str) -> String {
+    let mut parts = Vec::new();
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') {
+            if let Some((_, text)) = line.rsplit_once(']') {
+                let text = text.trim();
+                if !text.is_empty() {
+                    parts.push(text.to_string());
+                }
+            }
+            continue;
+        }
+        parts.push(line.to_string());
+    }
+    parts.join(" ").trim().to_string()
+}
+
+fn write_wav(path: &Path, audio: &[f32]) -> Result<(), BindingError> {
+    let mut file = std::fs::File::create(path).map_err(|_| BindingError::InitFailed)?;
+    let data_len = (audio.len() * 2) as u32;
+    let chunk_size = 36 + data_len;
+    file.write_all(b"RIFF")
+        .and_then(|_| file.write_all(&chunk_size.to_le_bytes()))
+        .and_then(|_| file.write_all(b"WAVE"))
+        .and_then(|_| file.write_all(b"fmt "))
+        .and_then(|_| file.write_all(&16u32.to_le_bytes()))
+        .and_then(|_| file.write_all(&1u16.to_le_bytes()))
+        .and_then(|_| file.write_all(&1u16.to_le_bytes()))
+        .and_then(|_| file.write_all(&WHISPER_SAMPLE_RATE.to_le_bytes()))
+        .and_then(|_| {
+            let byte_rate = WHISPER_SAMPLE_RATE * u32::from(WHISPER_BITS_PER_SAMPLE / 8);
+            file.write_all(&byte_rate.to_le_bytes())
+        })
+        .and_then(|_| {
+            let block_align = (WHISPER_BITS_PER_SAMPLE / 8) as u16;
+            file.write_all(&block_align.to_le_bytes())
+        })
+        .and_then(|_| file.write_all(&WHISPER_BITS_PER_SAMPLE.to_le_bytes()))
+        .and_then(|_| file.write_all(b"data"))
+        .and_then(|_| file.write_all(&data_len.to_le_bytes()))
+        .map_err(|_| BindingError::InitFailed)?;
+
+    for sample in audio {
+        let scaled = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+        file.write_all(&scaled.to_le_bytes())
+            .map_err(|_| BindingError::InitFailed)?;
+    }
+    Ok(())
+}
+
+fn run_whisper_cli_with_bin(
+    bin: &std::ffi::OsStr,
+    model_path: &Path,
+    audio: &[f32],
+) -> Result<String, BindingError> {
+    let temp_dir = tempfile::tempdir().map_err(|_| BindingError::InitFailed)?;
+    let wav_path = temp_dir.path().join("audio.wav");
+    write_wav(&wav_path, audio)?;
+    let output_prefix = temp_dir.path().join("whisper-output");
+
+    let output = Command::new(bin)
+        .arg("-m")
+        .arg(model_path)
+        .arg("-f")
+        .arg(&wav_path)
+        .arg("-otxt")
+        .arg("-of")
+        .arg(&output_prefix)
+        .output()
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                BindingError::Unavailable
+            } else {
+                BindingError::InitFailed
+            }
+        })?;
+
+    if !output.status.success() {
+        return Err(BindingError::InitFailed);
+    }
+
+    let output_path = output_prefix.with_extension("txt");
+    if let Ok(contents) = std::fs::read_to_string(&output_path) {
+        let trimmed = contents.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    let stdout_text = parse_cli_output(&String::from_utf8_lossy(&output.stdout));
+    if !stdout_text.is_empty() {
+        return Ok(stdout_text);
+    }
+    let stderr_text = parse_cli_output(&String::from_utf8_lossy(&output.stderr));
+    Ok(stderr_text)
+}
+
+fn transcribe_with_cli(model_path: &Path, audio: &[f32]) -> Result<String, BindingError> {
+    let bin = resolve_whisper_bin();
+    run_whisper_cli_with_bin(bin.as_os_str(), model_path, audio)
+}
 
 #[cfg(feature = "whisper-ffi")]
 mod ffi {
@@ -35,6 +150,7 @@ mod ffi {
 #[cfg(feature = "whisper-ffi")]
 pub struct WhisperContext {
     ctx: std::ptr::NonNull<ffi::whisper_context>,
+    model_path: PathBuf,
 }
 
 #[cfg(feature = "whisper-ffi")]
@@ -55,26 +171,88 @@ impl WhisperBindings for WhisperCppBindings {
             .map_err(|_| BindingError::InitFailed)?;
         let ctx = unsafe { ffi::whisper_init_from_file(c_path.as_ptr()) };
         let ctx = std::ptr::NonNull::new(ctx).ok_or(BindingError::InitFailed)?;
-        Ok(WhisperContext { ctx })
+        Ok(WhisperContext {
+            ctx,
+            model_path: path.to_path_buf(),
+        })
     }
 
-    fn transcribe(_context: &Self::Context, _audio: &[f32]) -> Result<String, BindingError> {
-        Err(BindingError::Unavailable)
+    fn transcribe(context: &Self::Context, audio: &[f32]) -> Result<String, BindingError> {
+        transcribe_with_cli(&context.model_path, audio)
     }
 }
 
 #[cfg(not(feature = "whisper-ffi"))]
-pub struct WhisperContext;
+pub struct WhisperContext {
+    model_path: PathBuf,
+}
 
 #[cfg(not(feature = "whisper-ffi"))]
 impl WhisperBindings for WhisperCppBindings {
     type Context = WhisperContext;
 
-    fn init_from_file(_path: &Path) -> Result<Self::Context, BindingError> {
-        Err(BindingError::Unavailable)
+    fn init_from_file(path: &Path) -> Result<Self::Context, BindingError> {
+        Ok(WhisperContext {
+            model_path: path.to_path_buf(),
+        })
     }
 
-    fn transcribe(_context: &Self::Context, _audio: &[f32]) -> Result<String, BindingError> {
-        Err(BindingError::Unavailable)
+    fn transcribe(context: &Self::Context, audio: &[f32]) -> Result<String, BindingError> {
+        transcribe_with_cli(&context.model_path, audio)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn parse_cli_output_strips_timestamps() {
+        let output = "[00:00.000 --> 00:01.000] Hello\n[00:01.000 --> 00:02.000] world";
+        assert_eq!(parse_cli_output(output), "Hello world");
+    }
+
+    #[test]
+    fn write_wav_encodes_pcm16() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wav_path = dir.path().join("sample.wav");
+        write_wav(&wav_path, &[0.0, 1.0]).expect("write wav");
+        let bytes = fs::read(&wav_path).expect("read wav");
+        assert!(bytes.starts_with(b"RIFF"));
+        assert_eq!(bytes[8..12], *b"WAVE");
+        assert_eq!(bytes[36..40], *b"data");
+        assert_eq!(bytes.len(), 44 + 4);
+    }
+
+    #[test]
+    fn run_whisper_cli_reads_output_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bin_path = dir.path().join("whisper-mock");
+        let script = "#!/bin/sh\n".to_string()
+            + "out=\"\"\n"
+            + "while [ \"$#\" -gt 0 ]; do\n"
+            + "  if [ \"$1\" = \"-of\" ]; then\n"
+            + "    shift\n"
+            + "    out=\"$1\"\n"
+            + "  fi\n"
+            + "  shift\n"
+            + "done\n"
+            + "if [ -z \"$out\" ]; then\n"
+            + "  exit 1\n"
+            + "fi\n"
+            + "printf \"%s\" \"mock transcript\" > \"${out}.txt\"\n"
+            + "exit 0\n";
+        fs::write(&bin_path, script).expect("write script");
+        let mut perms = fs::metadata(&bin_path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&bin_path, perms).expect("set perms");
+
+        let model_path = dir.path().join("model.bin");
+        fs::write(&model_path, "model").expect("write model");
+        let result = run_whisper_cli_with_bin(bin_path.as_os_str(), &model_path, &[0.0, 0.1])
+            .expect("transcribe");
+        assert_eq!(result, "mock transcript");
     }
 }
