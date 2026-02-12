@@ -97,6 +97,20 @@ impl<B: AudioBackend> AudioCaptureService<B> {
     }
 
     pub fn start(&mut self) -> Result<(), AudioError> {
+        self.start_internal(None)
+    }
+
+    pub fn start_with_callback(
+        &mut self,
+        callback: impl FnMut(&[f32]) + Send + 'static,
+    ) -> Result<(), AudioError> {
+        self.start_internal(Some(Box::new(callback)))
+    }
+
+    fn start_internal(
+        &mut self,
+        mut callback: Option<Box<dyn FnMut(&[f32]) + Send>>,
+    ) -> Result<(), AudioError> {
         if self.stream.is_some() {
             return Err(AudioError::AlreadyRunning);
         }
@@ -113,6 +127,9 @@ impl<B: AudioBackend> AudioCaptureService<B> {
         let on_samples = move |samples: &[f32]| {
             if let Ok(mut meter) = meter.lock() {
                 meter.update(samples);
+            }
+            if let Some(handler) = callback.as_mut() {
+                handler(samples);
             }
         };
 

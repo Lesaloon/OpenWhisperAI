@@ -1,6 +1,7 @@
 mod audio;
 mod hotkeys;
 mod meter;
+mod ptt;
 
 pub use audio::{AudioBackend, AudioCaptureService, AudioDevice, AudioError, AudioStream};
 pub use hotkeys::{
@@ -8,3 +9,4 @@ pub use hotkeys::{
     HotkeyKey, HotkeyManager, HotkeyModifiers, HotkeyState, HotkeyTrigger,
 };
 pub use meter::{LevelMeter, LevelReading};
+pub use ptt::{PttCaptureError, PttCaptureService};
