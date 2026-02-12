@@ -27,6 +27,11 @@ fn main() {
             app.manage(state::AppState::new(settings_path, model_root));
             attach_app_handle(app.handle());
             let app_state = app.state::<state::AppState>();
+            let settings = app_state.lock_orchestrator().settings();
+            let active_model = app_state.lock_models().snapshot().active_model;
+            if let Err(err) = app_state.ptt_handle().start(settings, active_model) {
+                log::warn!("failed to auto-start ptt: {err}");
+            }
             let backend_state = app_state.lock_orchestrator().current_state();
             let models = app_state.lock_models().snapshot();
             let ptt_state = app_state.ptt_state();
