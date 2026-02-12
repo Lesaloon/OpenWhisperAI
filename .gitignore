@@ -8,3 +8,23 @@
 
 # Worktrees directory
 worktrees/
+
+# Rust
+target/
+**/target/
+
+# Tauri / frontend
+node_modules/
+dist/
+apps/tauri/dist/
+apps/tauri/src-tauri/target/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Env
+.env
+.env.*
