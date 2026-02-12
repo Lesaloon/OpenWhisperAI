@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 pub struct AudioDevice {
     pub id: String,
     pub name: String,
+    pub sample_rate: u32,
+    pub channels: u16,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -227,9 +229,14 @@ impl AudioBackend for CpalAudioBackend {
             let name = device
                 .name()
                 .map_err(|err| AudioError::Backend(err.to_string()))?;
+            let default_config = device
+                .default_input_config()
+                .map_err(|err| AudioError::Backend(err.to_string()))?;
             devices.push(AudioDevice {
                 id: format!("{}:{}", index, name),
                 name,
+                sample_rate: default_config.sample_rate().0,
+                channels: default_config.channels(),
             });
         }
         Ok(devices)
@@ -244,10 +251,15 @@ impl AudioBackend for CpalAudioBackend {
         let name = device
             .name()
             .map_err(|err| AudioError::Backend(err.to_string()))?;
+        let default_config = device
+            .default_input_config()
+            .map_err(|err| AudioError::Backend(err.to_string()))?;
 
         Ok(Some(AudioDevice {
             id: format!("default:{}", name),
             name,
+            sample_rate: default_config.sample_rate().0,
+            channels: default_config.channels(),
         }))
     }
 
@@ -411,6 +423,8 @@ mod tests {
         let backend = MockAudioBackend::new(vec![AudioDevice {
             id: "0:Mock".to_string(),
             name: "Mock".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
         }]);
         let controller_handle = backend.controller.clone();
         let mut service = AudioCaptureService::new(backend);
@@ -434,6 +448,8 @@ mod tests {
         let backend = MockAudioBackend::new(vec![AudioDevice {
             id: "0:Mock".to_string(),
             name: "Mock".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
         }]);
         let service = AudioCaptureService::new(backend);
         let reading = service.level().expect("meter");
@@ -445,6 +461,8 @@ mod tests {
         let backend = MockAudioBackend::new(vec![AudioDevice {
             id: "0:Mock".to_string(),
             name: "Mock".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
         }]);
         let mut service = AudioCaptureService::new(backend);
         assert!(!service.is_running());
@@ -459,12 +477,16 @@ mod tests {
         let backend = MockAudioBackend::new(vec![AudioDevice {
             id: "0:Mock".to_string(),
             name: "Mock".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
         }]);
         let mut service = AudioCaptureService::new(backend);
         service.start().expect("start capture");
 
         let selected = service.selected_device().expect("device selected");
         assert_eq!(selected.id, "0:Mock");
+        assert_eq!(selected.sample_rate, 48_000);
+        assert_eq!(selected.channels, 2);
     }
 
     #[test]
@@ -472,6 +494,8 @@ mod tests {
         let backend = MockAudioBackend::new(vec![AudioDevice {
             id: "0:Mock".to_string(),
             name: "Mock".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
         }]);
         let controller_handle = backend.controller.clone();
         let mut service = AudioCaptureService::new(backend);

@@ -248,6 +248,8 @@ mod tests {
         let backend = MockAudioBackend::new(vec![AudioDevice {
             id: "0:Mock".to_string(),
             name: "Mock".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
         }]);
         let controller_handle = backend.controller.clone();
         let mut service = PttCaptureService::new(backend, "ptt");
@@ -282,6 +284,8 @@ mod tests {
         let backend = MockAudioBackend::new(vec![AudioDevice {
             id: "0:Mock".to_string(),
             name: "Mock".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
         }]);
         let controller_handle = backend.controller.clone();
         let mut service = PttCaptureService::new(backend, "ptt");
@@ -306,6 +310,8 @@ mod tests {
         let backend = MockAudioBackend::new(vec![AudioDevice {
             id: "0:Mock".to_string(),
             name: "Mock".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
         }]);
         let mut service = PttCaptureService::new(backend, "ptt");
         service.start().expect("start capture");
@@ -328,6 +334,8 @@ mod tests {
         let backend = MockAudioBackend::new(vec![AudioDevice {
             id: "0:Mock".to_string(),
             name: "Mock".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
         }]);
         let mut service = PttCaptureService::new(backend, "ptt");
 
@@ -346,6 +354,8 @@ mod tests {
         let backend = MockAudioBackend::new(vec![AudioDevice {
             id: "0:Mock".to_string(),
             name: "Mock".to_string(),
+            sample_rate: 48_000,
+            channels: 2,
         }]);
         let controller_handle = backend.controller.clone();
         let mut service = PttCaptureService::new(backend, "ptt");
