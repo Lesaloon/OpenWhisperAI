@@ -4,7 +4,6 @@ use core_input::{
     Hotkey, HotkeyActionEvent, HotkeyKey, HotkeyListenerHandle, HotkeyManager, HotkeyModifiers,
     HotkeyState, HotkeyTrigger, LevelReading, PttCaptureService,
 };
-use enigo::KeyboardControllable;
 use serde::{Deserialize, Serialize};
 use shared_types::{AppSettings, PttLevel, PttState};
 use std::{
@@ -879,12 +878,12 @@ mod tests {
         let controller_handle = backend.controller.clone();
         let (inject_tx, inject_rx) = mpsc::channel();
         let mut controller = PttController::with_backend(backend, std::env::temp_dir());
-        controller.transcriber = Arc::new(MockTranscriber);
-        controller.injector = Arc::new(MockInjector { sender: inject_tx });
 
         controller
             .arm(AppSettings::default(), Some("base".to_string()))
             .expect("arm");
+        controller.transcriber = Arc::new(MockTranscriber);
+        controller.injector = Arc::new(MockInjector { sender: inject_tx });
 
         let event_pressed = HotkeyActionEvent {
             action: "ptt".to_string(),
