@@ -1,14 +1,16 @@
 use crate::logging::emit_app_event;
 use core_input::{
-    AudioBackend, AudioDevice, AudioError, AudioStream, GlobalHotkeyListener, Hotkey,
-    HotkeyActionEvent, HotkeyKey, HotkeyListenerHandle, HotkeyManager, HotkeyModifiers,
+    AudioBackend, AudioDevice, AudioError, AudioStream, CpalAudioBackend, GlobalHotkeyListener,
+    Hotkey, HotkeyActionEvent, HotkeyKey, HotkeyListenerHandle, HotkeyManager, HotkeyModifiers,
     HotkeyState, HotkeyTrigger, LevelReading, PttCaptureService,
 };
+use enigo::KeyboardControllable;
 use serde::{Deserialize, Serialize};
 use shared_types::{AppSettings, PttLevel, PttState};
 use std::{
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex},
+    time::Duration,
 };
 use transcribe_engine::{FsDownloader, ModelId, ModelManager, ModelSpec, TranscriptionPipeline};
 
@@ -16,6 +18,133 @@ pub const PTT_STATE_EVENT: &str = "ptt_state";
 pub const PTT_LEVEL_EVENT: &str = "ptt_level";
 pub const PTT_TRANSCRIPTION_EVENT: &str = "ptt_transcription";
 pub const PTT_ERROR_EVENT: &str = "ptt_error";
+
+#[derive(Clone)]
+pub struct PttHandle {
+    sender: mpsc::Sender<PttRuntimeCommand>,
+    state: Arc<Mutex<PttState>>,
+}
+
+enum PttRuntimeCommand {
+    Start {
+        settings: AppSettings,
+        active_model: Option<String>,
+        respond: mpsc::Sender<Result<PttState, String>>,
+    },
+    Stop {
+        respond: mpsc::Sender<Result<PttState, String>>,
+    },
+    SetHotkey {
+        payload: PttHotkeyPayload,
+        respond: mpsc::Sender<Result<PttHotkeyPayload, String>>,
+    },
+    UpdateSettings {
+        settings: AppSettings,
+    },
+    SetActiveModel {
+        active_model: Option<String>,
+    },
+}
+
+impl PttHandle {
+    pub fn new(model_root: PathBuf) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let state = Arc::new(Mutex::new(PttState::Idle));
+        let state_handle = Arc::clone(&state);
+
+        std::thread::spawn(move || {
+            let mut controller = SystemPttController::new(model_root);
+            controller.attach_state_store(Arc::clone(&state_handle));
+
+            loop {
+                match receiver.recv_timeout(Duration::from_millis(25)) {
+                    Ok(command) => match command {
+                        PttRuntimeCommand::Start {
+                            settings,
+                            active_model,
+                            respond,
+                        } => {
+                            let result = controller.start(settings, active_model);
+                            let _ = respond.send(result);
+                        }
+                        PttRuntimeCommand::Stop { respond } => {
+                            let result = controller.stop();
+                            let _ = respond.send(result);
+                        }
+                        PttRuntimeCommand::SetHotkey { payload, respond } => {
+                            let result = controller.set_hotkey(payload);
+                            let _ = respond.send(result);
+                        }
+                        PttRuntimeCommand::UpdateSettings { settings } => {
+                            controller.update_settings(settings);
+                        }
+                        PttRuntimeCommand::SetActiveModel { active_model } => {
+                            controller.set_active_model(active_model);
+                        }
+                    },
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+
+                controller.poll_hotkey_events();
+                controller.poll_level_readings();
+            }
+        });
+
+        Self { sender, state }
+    }
+
+    pub fn start(
+        &self,
+        settings: AppSettings,
+        active_model: Option<String>,
+    ) -> Result<PttState, String> {
+        let (respond, receiver) = mpsc::channel();
+        self.sender
+            .send(PttRuntimeCommand::Start {
+                settings,
+                active_model,
+                respond,
+            })
+            .map_err(|err| err.to_string())?;
+        receiver.recv().map_err(|err| err.to_string())?
+    }
+
+    pub fn stop(&self) -> Result<PttState, String> {
+        let (respond, receiver) = mpsc::channel();
+        self.sender
+            .send(PttRuntimeCommand::Stop { respond })
+            .map_err(|err| err.to_string())?;
+        receiver.recv().map_err(|err| err.to_string())?
+    }
+
+    pub fn set_hotkey(&self, payload: PttHotkeyPayload) -> Result<PttHotkeyPayload, String> {
+        let (respond, receiver) = mpsc::channel();
+        self.sender
+            .send(PttRuntimeCommand::SetHotkey { payload, respond })
+            .map_err(|err| err.to_string())?;
+        receiver.recv().map_err(|err| err.to_string())?
+    }
+
+    pub fn update_settings(&self, settings: AppSettings) {
+        let _ = self
+            .sender
+            .send(PttRuntimeCommand::UpdateSettings { settings });
+    }
+
+    pub fn set_active_model(&self, active_model: Option<String>) {
+        let _ = self
+            .sender
+            .send(PttRuntimeCommand::SetActiveModel { active_model });
+    }
+
+    pub fn state(&self) -> PttState {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PttHotkeyPayload {
@@ -131,12 +260,13 @@ pub struct PttController<B: AudioBackend> {
     hotkey_listener: Option<HotkeyListenerHandle>,
     hotkey_receiver: Option<mpsc::Receiver<HotkeyActionEvent>>,
     runtime_started: bool,
-    level_task_started: bool,
+    level_receiver: Option<mpsc::Receiver<LevelReading>>,
     capture: PttCaptureService<B>,
     transcriber: Arc<dyn Transcriber>,
     injector: Arc<dyn TextInjector>,
     settings: AppSettings,
     model_root: PathBuf,
+    state_store: Option<Arc<Mutex<PttState>>>,
 }
 
 pub type SystemPttController = PttController<CpalAudioBackend>;
@@ -165,17 +295,24 @@ impl<B: AudioBackend> PttController<B> {
             hotkey_listener: None,
             hotkey_receiver: None,
             runtime_started: false,
-            level_task_started: false,
+            level_receiver: None,
             capture: PttCaptureService::new(backend, "ptt"),
             transcriber,
             injector: Arc::new(ClipboardInjector),
             settings: AppSettings::default(),
             model_root,
+            state_store: None,
         }
     }
 
-    pub fn current_state(&self) -> PttState {
-        self.state.clone()
+    pub fn attach_state_store(&mut self, store: Arc<Mutex<PttState>>) {
+        self.state_store = Some(store);
+        if let Some(store) = &self.state_store {
+            let mut guard = store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = self.state.clone();
+        }
     }
 
     pub fn set_hotkey(&mut self, payload: PttHotkeyPayload) -> Result<PttHotkeyPayload, String> {
@@ -197,14 +334,13 @@ impl<B: AudioBackend> PttController<B> {
         self.settings = settings;
     }
 
-    pub fn start_with_handle(
-        handle: Arc<Mutex<Self>>,
+    pub fn start(
+        &mut self,
         settings: AppSettings,
         active_model: Option<String>,
     ) -> Result<PttState, String> {
-        Self::ensure_runtime(Arc::clone(&handle))?;
-        let mut controller = lock_controller(&handle);
-        controller.arm(settings, active_model)
+        self.ensure_runtime()?;
+        self.arm(settings, active_model)
     }
 
     pub fn stop(&mut self) -> Result<PttState, String> {
@@ -241,73 +377,82 @@ impl<B: AudioBackend> PttController<B> {
         Ok(())
     }
 
-    fn ensure_runtime(handle: Arc<Mutex<Self>>) -> Result<(), String> {
-        let mut controller = lock_controller(&handle);
-        if controller.runtime_started {
+    fn ensure_runtime(&mut self) -> Result<(), String> {
+        if self.runtime_started {
             return Ok(());
         }
 
-        if controller.hotkey_receiver.is_none() {
-            let listener = GlobalHotkeyListener::new(Arc::clone(&controller.hotkey_manager));
+        if self.hotkey_receiver.is_none() {
+            let listener = GlobalHotkeyListener::new(Arc::clone(&self.hotkey_manager));
             let (handle_listener, receiver) = listener.start().map_err(|err| err.to_string())?;
-            controller.hotkey_listener = Some(handle_listener);
-            controller.hotkey_receiver = Some(receiver);
+            self.hotkey_listener = Some(handle_listener);
+            self.hotkey_receiver = Some(receiver);
         }
 
-        if !controller.level_task_started {
-            if let Some(receiver) = controller.capture.level_feed() {
-                let handle_clone = Arc::clone(&handle);
-                std::thread::spawn(move || {
-                    for reading in receiver {
-                        let should_emit = {
-                            let controller = lock_controller(&handle_clone);
-                            controller.armed
-                        };
-                        if should_emit {
-                            emit_level(reading);
-                        }
-                    }
-                });
-                controller.level_task_started = true;
-            }
+        if self.level_receiver.is_none() {
+            self.level_receiver = self.capture.level_feed();
         }
 
-        let receiver = controller
-            .hotkey_receiver
-            .take()
-            .ok_or_else(|| "hotkey receiver missing".to_string())?;
-        controller.runtime_started = true;
-        drop(controller);
+        self.runtime_started = true;
+        Ok(())
+    }
 
-        let handle_clone = Arc::clone(&handle);
-        std::thread::spawn(move || {
-            for event in receiver {
-                let work = {
-                    let mut controller = lock_controller(&handle_clone);
-                    match controller.handle_hotkey_action(&event) {
+    fn poll_hotkey_events(&mut self) {
+        let Some(receiver) = self.hotkey_receiver.take() else {
+            return;
+        };
+        loop {
+            match receiver.try_recv() {
+                Ok(event) => {
+                    let work = match self.handle_hotkey_action(&event) {
                         Ok(value) => value,
                         Err(err) => {
-                            controller.emit_error(&err);
+                            self.emit_error(&err);
                             None
                         }
-                    }
-                };
+                    };
 
-                if let Some(work) = work {
-                    let transcription = work.transcriber.transcribe(&work.audio);
-                    if let Ok(text) = &transcription {
-                        if work.auto_export && !text.is_empty() {
-                            let _ = work.injector.inject(text);
+                    if let Some(work) = work {
+                        let transcription = work.transcriber.transcribe(&work.audio);
+                        if let Ok(text) = &transcription {
+                            if work.auto_export && !text.is_empty() {
+                                let _ = work.injector.inject(text);
+                            }
                         }
+                        self.complete_transcription(transcription);
                     }
-
-                    let mut controller = lock_controller(&handle_clone);
-                    controller.complete_transcription(transcription);
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.hotkey_receiver = None;
+                    return;
                 }
             }
-        });
+        }
 
-        Ok(())
+        self.hotkey_receiver = Some(receiver);
+    }
+
+    fn poll_level_readings(&mut self) {
+        let Some(receiver) = self.level_receiver.take() else {
+            return;
+        };
+        loop {
+            match receiver.try_recv() {
+                Ok(reading) => {
+                    if self.armed {
+                        emit_level(reading);
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.level_receiver = None;
+                    return;
+                }
+            }
+        }
+
+        self.level_receiver = Some(receiver);
     }
 
     fn handle_hotkey_action(
@@ -375,6 +520,12 @@ impl<B: AudioBackend> PttController<B> {
             return;
         }
         self.state = next.clone();
+        if let Some(store) = &self.state_store {
+            let mut guard = store
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = next.clone();
+        }
         emit_app_event(PTT_STATE_EVENT, &next);
     }
 }
@@ -501,156 +652,6 @@ fn emit_level(reading: LevelReading) {
     emit_app_event(PTT_LEVEL_EVENT, &level);
 }
 
-fn lock_controller<T>(handle: &Arc<Mutex<T>>) -> std::sync::MutexGuard<'_, T> {
-    handle
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-#[derive(Default)]
-pub struct CpalAudioBackend {
-    host: cpal::Host,
-}
-
-pub struct CpalAudioStream {
-    stream: cpal::Stream,
-}
-
-impl AudioStream for CpalAudioStream {
-    fn start(&self) -> Result<(), AudioError> {
-        self.stream
-            .play()
-            .map_err(|err| AudioError::Backend(err.to_string()))
-    }
-
-    fn stop(&self) -> Result<(), AudioError> {
-        self.stream
-            .pause()
-            .map_err(|err| AudioError::Backend(err.to_string()))
-    }
-}
-
-impl CpalAudioBackend {
-    fn device_from_id(&self, device: &AudioDevice) -> Result<cpal::Device, AudioError> {
-        if device.id.starts_with("default:") {
-            return self
-                .host
-                .default_input_device()
-                .ok_or(AudioError::NoInputDevice);
-        }
-
-        let mut parts = device.id.splitn(2, ':');
-        let index = parts
-            .next()
-            .and_then(|value| value.parse::<usize>().ok())
-            .ok_or(AudioError::DeviceNotFound)?;
-
-        let mut devices = self
-            .host
-            .input_devices()
-            .map_err(|err| AudioError::Backend(err.to_string()))?;
-        devices.nth(index).ok_or(AudioError::DeviceNotFound)
-    }
-}
-
-impl AudioBackend for CpalAudioBackend {
-    type Stream = CpalAudioStream;
-
-    fn list_input_devices(&self) -> Result<Vec<AudioDevice>, AudioError> {
-        let mut devices = Vec::new();
-        for (index, device) in self
-            .host
-            .input_devices()
-            .map_err(|err| AudioError::Backend(err.to_string()))?
-            .enumerate()
-        {
-            let name = device
-                .name()
-                .map_err(|err| AudioError::Backend(err.to_string()))?;
-            devices.push(AudioDevice {
-                id: format!("{}:{}", index, name),
-                name,
-            });
-        }
-        Ok(devices)
-    }
-
-    fn default_input_device(&self) -> Result<Option<AudioDevice>, AudioError> {
-        let device = match self.host.default_input_device() {
-            Some(device) => device,
-            None => return Ok(None),
-        };
-
-        let name = device
-            .name()
-            .map_err(|err| AudioError::Backend(err.to_string()))?;
-
-        Ok(Some(AudioDevice {
-            id: format!("default:{}", name),
-            name,
-        }))
-    }
-
-    fn build_input_stream(
-        &self,
-        device: &AudioDevice,
-        mut on_samples: Box<dyn FnMut(&[f32]) + Send>,
-    ) -> Result<Self::Stream, AudioError> {
-        let device = self.device_from_id(device)?;
-        let default_config = device
-            .default_input_config()
-            .map_err(|err| AudioError::Backend(err.to_string()))?;
-        let stream_config: cpal::StreamConfig = default_config.clone().into();
-
-        let error_callback = |err| {
-            eprintln!("audio input stream error: {err}");
-        };
-
-        let stream = match default_config.sample_format() {
-            cpal::SampleFormat::F32 => device
-                .build_input_stream(
-                    &stream_config,
-                    move |data: &[f32], _| on_samples(data),
-                    error_callback,
-                    None,
-                )
-                .map_err(|err| AudioError::Backend(err.to_string()))?,
-            cpal::SampleFormat::I16 => device
-                .build_input_stream(
-                    &stream_config,
-                    move |data: &[i16], _| {
-                        let converted: Vec<f32> = data
-                            .iter()
-                            .map(|value| *value as f32 / i16::MAX as f32)
-                            .collect();
-                        on_samples(&converted);
-                    },
-                    error_callback,
-                    None,
-                )
-                .map_err(|err| AudioError::Backend(err.to_string()))?,
-            cpal::SampleFormat::U16 => device
-                .build_input_stream(
-                    &stream_config,
-                    move |data: &[u16], _| {
-                        let midpoint = (u16::MAX as f32 + 1.0) / 2.0;
-                        let converted: Vec<f32> = data
-                            .iter()
-                            .map(|value| (*value as f32 - midpoint) / midpoint)
-                            .collect();
-                        on_samples(&converted);
-                    },
-                    error_callback,
-                    None,
-                )
-                .map_err(|err| AudioError::Backend(err.to_string()))?,
-            _ => return Err(AudioError::Backend("unsupported sample format".to_string())),
-        };
-
-        Ok(CpalAudioStream { stream })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,17 +740,11 @@ mod tests {
                 devices: vec![AudioDevice {
                     id: "0:Mock".to_string(),
                     name: "Mock".to_string(),
+                    sample_rate: 44_100,
+                    channels: 2,
                 }],
                 controller: Arc::new(Mutex::new(None)),
             }
-        }
-
-        fn controller(&self) -> MockStreamController {
-            self.controller
-                .lock()
-                .expect("lock")
-                .clone()
-                .expect("controller")
         }
     }
 

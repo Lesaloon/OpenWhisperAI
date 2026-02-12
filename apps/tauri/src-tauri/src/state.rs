@@ -1,7 +1,7 @@
-use crate::{logging::emit_app_event, ptt::SystemPttController};
+use crate::{logging::emit_app_event, ptt::PttHandle};
 use shared_types::{
     AppSettings, BackendEvent, BackendState, ModelInstallStatus, ModelStatusItem,
-    ModelStatusPayload, SettingsUpdate,
+    ModelStatusPayload, PttState, SettingsUpdate,
 };
 use std::{
     fs,
@@ -152,7 +152,7 @@ impl BackendOrchestrator {
 pub struct AppState {
     pub orchestrator: Mutex<BackendOrchestrator>,
     pub models: Mutex<ModelStore>,
-    pub ptt: Arc<Mutex<SystemPttController>>,
+    pub ptt: PttHandle,
 }
 
 impl AppState {
@@ -160,7 +160,7 @@ impl AppState {
         Self {
             orchestrator: Mutex::new(BackendOrchestrator::new(settings_path)),
             models: Mutex::new(ModelStore::new()),
-            ptt: Arc::new(Mutex::new(SystemPttController::new(model_root))),
+            ptt: PttHandle::new(model_root),
         }
     }
 
@@ -176,14 +176,12 @@ impl AppState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub fn lock_ptt(&self) -> MutexGuard<'_, SystemPttController> {
-        self.ptt
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    pub fn ptt_handle(&self) -> PttHandle {
+        self.ptt.clone()
     }
 
-    pub fn ptt_handle(&self) -> Arc<Mutex<SystemPttController>> {
-        Arc::clone(&self.ptt)
+    pub fn ptt_state(&self) -> PttState {
+        self.ptt.state()
     }
 }
 
