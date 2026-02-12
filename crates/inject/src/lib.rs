@@ -66,34 +66,42 @@ where
         };
 
         if let Err(err) = self.clipboard.set_text(text) {
-            return self
-                .typer
-                .type_text(text)
-                .map(|()| InjectOutcome::TypedFallback)
-                .map_err(|typing_err| InjectError::Typing {
-                    source: typing_err,
-                    clipboard: Some(err),
-                });
+            return self.typing_fallback_with_restore(text, err, previous);
         }
 
-        let paste_result = self.clipboard.paste();
-        let restore_result = restore_clipboard(&mut self.clipboard, previous);
-
-        match paste_result {
-            Ok(()) => restore_result
+        match self.clipboard.paste() {
+            Ok(()) => restore_clipboard(&mut self.clipboard, previous)
                 .map(|()| InjectOutcome::Clipboard)
                 .map_err(InjectError::ClipboardRestore),
-            Err(paste_err) => {
-                self.typer
-                    .type_text(text)
-                    .map_err(|typing_err| InjectError::Typing {
-                        source: typing_err,
-                        clipboard: Some(paste_err.clone()),
-                    })?;
+            Err(paste_err) => self.typing_fallback_with_restore(text, paste_err, previous),
+        }
+    }
 
-                restore_result
-                    .map(|()| InjectOutcome::TypedFallback)
-                    .map_err(InjectError::ClipboardRestore)
+    fn typing_fallback_with_restore(
+        &mut self,
+        text: &str,
+        clipboard_error: ClipboardError,
+        previous: Option<String>,
+    ) -> Result<InjectOutcome, InjectError> {
+        let typing_result = self.typer.type_text(text);
+        let restore_result = restore_clipboard(&mut self.clipboard, previous);
+
+        match typing_result {
+            Ok(()) => restore_result
+                .map(|()| InjectOutcome::TypedFallback)
+                .map_err(InjectError::ClipboardRestore),
+            Err(typing_err) => {
+                if let Err(restore_err) = restore_result {
+                    return Err(InjectError::Typing {
+                        source: typing_err,
+                        clipboard: Some(restore_err),
+                    });
+                }
+
+                Err(InjectError::Typing {
+                    source: typing_err,
+                    clipboard: Some(clipboard_error),
+                })
             }
         }
     }
@@ -256,7 +264,11 @@ mod tests {
         assert_eq!(clipboard.content, Some("keep".to_string()));
         assert_eq!(
             clipboard.ops,
-            vec![Op::Get, Op::Set("fallback".to_string()),]
+            vec![
+                Op::Get,
+                Op::Set("fallback".to_string()),
+                Op::Set("keep".to_string()),
+            ]
         );
         assert_eq!(typer.typed, vec!["fallback".to_string()]);
     }
@@ -314,6 +326,67 @@ mod tests {
         ));
         assert_eq!(clipboard.content, Some("keep".to_string()));
         assert_eq!(clipboard.ops, vec![Op::Get]);
+        assert!(typer.typed.is_empty());
+    }
+
+    #[test]
+    fn restores_clipboard_when_set_fails_and_typing_fails() {
+        let mut clipboard = MockClipboard::new(Some("stash".to_string()));
+        clipboard.fail_set = true;
+        let mut typer = MockTyper::default();
+        typer.fail = true;
+        let mut injector = Injector::new(clipboard, typer);
+
+        let result = injector.inject_text("fallback");
+        let (clipboard, typer) = injector.into_parts();
+
+        assert!(matches!(
+            result,
+            Err(InjectError::Typing {
+                source: TypingError("typing failed"),
+                clipboard: Some(ClipboardError("set failed")),
+            })
+        ));
+        assert_eq!(clipboard.content, Some("stash".to_string()));
+        assert_eq!(
+            clipboard.ops,
+            vec![
+                Op::Get,
+                Op::Set("fallback".to_string()),
+                Op::Set("stash".to_string()),
+            ]
+        );
+        assert!(typer.typed.is_empty());
+    }
+
+    #[test]
+    fn restores_clipboard_when_paste_fails_and_typing_fails() {
+        let mut clipboard = MockClipboard::new(Some("stash".to_string()));
+        clipboard.fail_paste = true;
+        let mut typer = MockTyper::default();
+        typer.fail = true;
+        let mut injector = Injector::new(clipboard, typer);
+
+        let result = injector.inject_text("typed");
+        let (clipboard, typer) = injector.into_parts();
+
+        assert!(matches!(
+            result,
+            Err(InjectError::Typing {
+                source: TypingError("typing failed"),
+                clipboard: Some(ClipboardError("paste failed")),
+            })
+        ));
+        assert_eq!(clipboard.content, Some("stash".to_string()));
+        assert_eq!(
+            clipboard.ops,
+            vec![
+                Op::Get,
+                Op::Set("typed".to_string()),
+                Op::Paste,
+                Op::Set("stash".to_string()),
+            ]
+        );
         assert!(typer.typed.is_empty());
     }
 }
