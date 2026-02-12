@@ -1,4 +1,7 @@
-use shared_types::{AppSettings, BackendEvent, BackendState, SettingsUpdate};
+use shared_types::{
+    AppSettings, BackendEvent, BackendState, ModelInstallStatus, ModelStatusItem,
+    ModelStatusPayload, SettingsUpdate,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -118,12 +121,14 @@ impl BackendOrchestrator {
 
 pub struct AppState {
     pub orchestrator: Mutex<BackendOrchestrator>,
+    pub models: Mutex<ModelStore>,
 }
 
 impl AppState {
     pub fn new(settings_path: PathBuf) -> Self {
         Self {
             orchestrator: Mutex::new(BackendOrchestrator::new(settings_path)),
+            models: Mutex::new(ModelStore::new()),
         }
     }
 
@@ -132,6 +137,54 @@ impl AppState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    pub fn lock_models(&self) -> MutexGuard<'_, ModelStore> {
+        self.models
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+pub struct ModelStore {
+    models: Vec<ModelStatusItem>,
+    active_model: Option<String>,
+}
+
+impl ModelStore {
+    pub fn new() -> Self {
+        Self {
+            models: Vec::new(),
+            active_model: None,
+        }
+    }
+
+    pub fn snapshot(&self) -> ModelStatusPayload {
+        ModelStatusPayload {
+            models: self.models.clone(),
+            active_model: self.active_model.clone(),
+            queue_count: queue_count(&self.models),
+        }
+    }
+
+    pub fn set(&mut self, payload: ModelStatusPayload) -> ModelStatusPayload {
+        self.models = payload.models;
+        self.active_model = payload.active_model;
+        self.snapshot()
+    }
+}
+
+fn queue_count(models: &[ModelStatusItem]) -> usize {
+    models
+        .iter()
+        .filter(|model| {
+            matches!(
+                model.status,
+                ModelInstallStatus::Downloading
+                    | ModelInstallStatus::Queued
+                    | ModelInstallStatus::Pending
+            )
+        })
+        .count()
 }
 
 pub fn default_settings_path(config_dir: Option<PathBuf>) -> PathBuf {
