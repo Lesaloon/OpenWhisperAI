@@ -10,6 +10,9 @@
     "version": "0.1.0"
   },
   "tauri": {
+    "bundle": {
+      "icon": ["icons/icon.png"]
+    },
     "windows": [
       {
         "title": "OpenWhisperAI",
