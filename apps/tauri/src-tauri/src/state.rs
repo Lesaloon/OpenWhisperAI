@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -67,11 +67,18 @@ impl AppState {
             machine: Mutex::new(StateMachine::new()),
         }
     }
+
+    pub fn lock_machine(&self) -> MutexGuard<'_, StateMachine> {
+        self.machine
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn state_machine_happy_path() {
@@ -129,5 +136,21 @@ mod tests {
         let err = machine.apply(BackendEvent::FinishProcessing).unwrap_err();
         assert!(err.contains("invalid transition"));
         assert_eq!(machine.current(), BackendState::Idle);
+    }
+
+    #[test]
+    fn lock_machine_recovers_from_poison() {
+        let state = Arc::new(AppState::new());
+        let state_clone = Arc::clone(&state);
+
+        let _ = std::thread::spawn(move || {
+            let _guard = state_clone.machine.lock().unwrap();
+            panic!("poison lock");
+        })
+        .join();
+
+        assert!(state.machine.is_poisoned());
+        let guard = state.lock_machine();
+        assert_eq!(guard.current(), BackendState::Idle);
     }
 }
