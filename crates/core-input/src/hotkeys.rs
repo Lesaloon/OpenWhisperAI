@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{mpsc, Arc, Mutex},
 };
 
@@ -218,7 +218,7 @@ fn spawn_listener(
 ) -> HotkeyListenerHandle {
     let join_handle = std::thread::spawn(move || {
         let mut modifiers = ModifierState::default();
-        let mut pressed_keys = HashSet::new();
+        let mut pressed_keys: HashMap<HotkeyKey, HotkeyModifiers> = HashMap::new();
         let mut handler = move |event: rdev::Event| match event.event_type {
             rdev::EventType::KeyPress(key) => {
                 if modifiers.update(key, true) {
@@ -226,13 +226,16 @@ fn spawn_listener(
                 }
 
                 if let Some(mapped) = map_key(key) {
-                    if !pressed_keys.insert(mapped) {
+                    let modifiers_snapshot = modifiers.as_modifiers();
+                    if matches!(pressed_keys.get(&mapped), Some(existing) if *existing == modifiers_snapshot)
+                    {
                         return;
                     }
+                    pressed_keys.insert(mapped, modifiers_snapshot);
 
                     let event = HotkeyEvent {
                         key: mapped,
-                        modifiers: modifiers.as_modifiers(),
+                        modifiers: modifiers_snapshot,
                         state: HotkeyState::Pressed,
                     };
 
@@ -254,7 +257,7 @@ fn spawn_listener(
                 modifiers.update(key, false);
 
                 if let Some(mapped) = map_key(key) {
-                    if !pressed_keys.remove(&mapped) {
+                    if pressed_keys.remove(&mapped).is_none() {
                         return;
                     }
 
@@ -525,5 +528,77 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].action, "toggle-capture");
         assert_eq!(result[0].state, HotkeyState::Pressed);
+    }
+
+    #[test]
+    fn hotkey_listener_allows_modifier_variants() {
+        let manager = Arc::new(Mutex::new(HotkeyManager::new()));
+        let plain_hotkey = Hotkey {
+            key: HotkeyKey::F9,
+            modifiers: HotkeyModifiers::none(),
+        };
+        let ctrl_hotkey = Hotkey {
+            key: HotkeyKey::F9,
+            modifiers: HotkeyModifiers {
+                ctrl: true,
+                alt: false,
+                shift: false,
+                meta: false,
+            },
+        };
+        manager
+            .lock()
+            .expect("manager")
+            .register(plain_hotkey, "plain");
+        manager
+            .lock()
+            .expect("manager")
+            .register(ctrl_hotkey, "ctrl");
+
+        let (sender, receiver) = mpsc::channel();
+        let handle = spawn_listener(manager, sender, |mut handler| {
+            let press_plain = rdev::Event {
+                time: SystemTime::now(),
+                name: None,
+                event_type: rdev::EventType::KeyPress(rdev::Key::F9),
+            };
+            handler(press_plain);
+
+            let press_ctrl = rdev::Event {
+                time: SystemTime::now(),
+                name: None,
+                event_type: rdev::EventType::KeyPress(rdev::Key::ControlLeft),
+            };
+            handler(press_ctrl);
+
+            let press_ctrl_f9 = rdev::Event {
+                time: SystemTime::now(),
+                name: None,
+                event_type: rdev::EventType::KeyPress(rdev::Key::F9),
+            };
+            handler(press_ctrl_f9);
+
+            let release_f9 = rdev::Event {
+                time: SystemTime::now(),
+                name: None,
+                event_type: rdev::EventType::KeyRelease(rdev::Key::F9),
+            };
+            handler(release_f9);
+
+            let release_ctrl = rdev::Event {
+                time: SystemTime::now(),
+                name: None,
+                event_type: rdev::EventType::KeyRelease(rdev::Key::ControlLeft),
+            };
+            handler(release_ctrl);
+            Ok(())
+        });
+
+        handle.join().expect("listener join");
+
+        let result = receiver.try_iter().collect::<Vec<_>>();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].action, "plain");
+        assert_eq!(result[1].action, "ctrl");
     }
 }

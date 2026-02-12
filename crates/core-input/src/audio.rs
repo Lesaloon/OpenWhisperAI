@@ -109,12 +109,6 @@ impl<B: AudioBackend> AudioCaptureService<B> {
                 .ok_or(AudioError::NoInputDevice)?,
         };
 
-        if let Ok(mut meter) = self.meter.lock() {
-            meter.reset();
-        }
-
-        self.selected_device = Some(device.clone());
-
         let meter = Arc::clone(&self.meter);
         let on_samples = move |samples: &[f32]| {
             if let Ok(mut meter) = meter.lock() {
@@ -125,7 +119,11 @@ impl<B: AudioBackend> AudioCaptureService<B> {
         let stream = self
             .backend
             .build_input_stream(&device, Box::new(move |samples| on_samples(samples)))?;
+        if let Ok(mut meter) = self.meter.lock() {
+            meter.reset();
+        }
         stream.start()?;
+        self.selected_device = Some(device.clone());
         self.stream = Some(stream);
         Ok(())
     }

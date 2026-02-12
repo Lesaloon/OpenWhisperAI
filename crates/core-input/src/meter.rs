@@ -66,6 +66,11 @@ impl LevelMeter {
 
         let rms = (sum / count as f32).sqrt();
 
+        if !rms.is_finite() || !peak.is_finite() {
+            self.reading = LevelReading::silence();
+            return;
+        }
+
         self.reading = LevelReading { rms, peak, clipped };
     }
 
@@ -85,7 +90,7 @@ impl Default for LevelMeter {
 }
 
 fn to_dbfs(value: f32) -> f32 {
-    if value <= 0.0 {
+    if !value.is_finite() || value <= 0.0 {
         f32::NEG_INFINITY
     } else {
         20.0 * value.log10()
@@ -138,5 +143,20 @@ mod tests {
         let reading = meter.reading();
         assert_relative_eq!(reading.peak_dbfs(), 0.0, epsilon = 1e-6);
         assert_relative_eq!(reading.rms_dbfs(), 0.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn meter_dbfs_guards_nan() {
+        let reading = LevelReading {
+            rms: f32::NAN,
+            peak: f32::NAN,
+            clipped: false,
+        };
+        let rms_dbfs = reading.rms_dbfs();
+        let peak_dbfs = reading.peak_dbfs();
+        assert!(rms_dbfs.is_infinite());
+        assert!(rms_dbfs.is_sign_negative());
+        assert!(peak_dbfs.is_infinite());
+        assert!(peak_dbfs.is_sign_negative());
     }
 }
