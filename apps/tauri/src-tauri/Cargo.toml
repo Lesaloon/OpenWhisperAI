@@ -6,6 +6,7 @@ license = "MIT OR Apache-2.0"
 build = "build.rs"
 
 [dependencies]
+log = "0.4"
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "1" }
 shared-types = { path = "../../../crates/shared-types" }
