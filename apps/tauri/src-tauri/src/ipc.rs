@@ -1,15 +1,13 @@
 use crate::logging::{logger, LogEntry};
+use crate::ptt::PttHotkeyPayload;
 use crate::state::AppState;
 use shared_types::{
-    AppSettings, BackendEvent, BackendState, ModelStatusPayload, PttCommand, PttEvent,
-    SettingsUpdate,
+    AppSettings, BackendEvent, BackendState, ModelStatusPayload, PttState, SettingsUpdate,
 };
 use tauri::Manager;
 
 pub const BACKEND_STATE_EVENT: &str = "backend-state";
 pub const MODEL_STATUS_EVENT: &str = "model-download-status";
-pub const PTT_COMMAND_EVENT: &str = "ptt-command";
-pub const PTT_EVENT: &str = "ptt-event";
 
 #[tauri::command]
 pub fn ipc_get_state(state: tauri::State<AppState>) -> BackendState {
@@ -45,6 +43,7 @@ pub fn ipc_update_settings(
 ) -> Result<AppSettings, String> {
     let mut orchestrator = state.lock_orchestrator();
     let next = orchestrator.update_settings(update)?;
+    state.lock_ptt().update_settings(next.clone());
     log::info!("settings updated");
     Ok(next)
 }
@@ -56,6 +55,7 @@ pub fn ipc_set_settings(
 ) -> Result<AppSettings, String> {
     let mut orchestrator = state.lock_orchestrator();
     let next = orchestrator.set_settings(settings)?;
+    state.lock_ptt().update_settings(next.clone());
     log::info!("settings replaced");
     Ok(next)
 }
@@ -81,21 +81,36 @@ pub fn ipc_set_models(
         let mut models = state.lock_models();
         models.set(payload)
     };
+    state.lock_ptt().set_active_model(next.active_model.clone());
     let _ = app.emit_all(MODEL_STATUS_EVENT, next.clone());
     Ok(next)
 }
 
 #[tauri::command]
-pub fn ipc_send_ptt_command(
-    command: PttCommand,
-    app: tauri::AppHandle,
-) -> Result<PttCommand, String> {
-    let _ = app.emit_all(PTT_COMMAND_EVENT, command.clone());
-    Ok(command)
+pub fn ipc_ptt_start(state: tauri::State<AppState>) -> Result<PttState, String> {
+    let settings = state.lock_orchestrator().settings();
+    let active_model = state.lock_models().snapshot().active_model;
+    let handle = state.ptt_handle();
+    crate::ptt::SystemPttController::start_with_handle(handle, settings, active_model)
 }
 
 #[tauri::command]
-pub fn ipc_emit_ptt_event(event: PttEvent, app: tauri::AppHandle) -> Result<PttEvent, String> {
-    let _ = app.emit_all(PTT_EVENT, event.clone());
-    Ok(event)
+pub fn ipc_ptt_stop(state: tauri::State<AppState>) -> Result<PttState, String> {
+    let mut controller = state.lock_ptt();
+    controller.stop()
+}
+
+#[tauri::command]
+pub fn ipc_ptt_set_hotkey(
+    payload: PttHotkeyPayload,
+    state: tauri::State<AppState>,
+) -> Result<PttHotkeyPayload, String> {
+    let mut controller = state.lock_ptt();
+    controller.set_hotkey(payload)
+}
+
+#[tauri::command]
+pub fn ipc_ptt_get_state(state: tauri::State<AppState>) -> PttState {
+    let controller = state.lock_ptt();
+    controller.current_state()
 }

@@ -1,4 +1,4 @@
-use crate::logging::emit_app_event;
+use crate::{logging::emit_app_event, ptt::SystemPttController};
 use shared_types::{
     AppSettings, BackendEvent, BackendState, ModelInstallStatus, ModelStatusItem,
     ModelStatusPayload, SettingsUpdate,
@@ -152,13 +152,15 @@ impl BackendOrchestrator {
 pub struct AppState {
     pub orchestrator: Mutex<BackendOrchestrator>,
     pub models: Mutex<ModelStore>,
+    pub ptt: Arc<Mutex<SystemPttController>>,
 }
 
 impl AppState {
-    pub fn new(settings_path: PathBuf) -> Self {
+    pub fn new(settings_path: PathBuf, model_root: PathBuf) -> Self {
         Self {
             orchestrator: Mutex::new(BackendOrchestrator::new(settings_path)),
             models: Mutex::new(ModelStore::new()),
+            ptt: Arc::new(Mutex::new(SystemPttController::new(model_root))),
         }
     }
 
@@ -172,6 +174,16 @@ impl AppState {
         self.models
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn lock_ptt(&self) -> MutexGuard<'_, SystemPttController> {
+        self.ptt
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn ptt_handle(&self) -> Arc<Mutex<SystemPttController>> {
+        Arc::clone(&self.ptt)
     }
 }
 
@@ -348,7 +360,7 @@ mod tests {
     #[test]
     fn lock_orchestrator_recovers_from_poison() {
         let path = temp_settings_path();
-        let state = Arc::new(AppState::new(path));
+        let state = Arc::new(AppState::new(path, std::env::temp_dir()));
         let state_clone = Arc::clone(&state);
 
         let _ = std::thread::spawn(move || {
