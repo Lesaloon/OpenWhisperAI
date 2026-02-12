@@ -165,7 +165,7 @@ impl ModelManager {
         let tmp_path = path.with_extension("download");
         let mut file = File::create(&tmp_path)?;
         file.write_all(&bytes)?;
-        std::fs::rename(&tmp_path, &path)?;
+        replace_cached_model(&tmp_path, &path)?;
         Ok(path)
     }
 
@@ -237,6 +237,21 @@ fn verify_model_bytes(spec: &ModelSpec, bytes: &[u8]) -> Result<(), ModelError> 
         }
     }
     Ok(())
+}
+
+fn replace_cached_model(tmp_path: &Path, path: &Path) -> Result<(), ModelError> {
+    match std::fs::rename(tmp_path, path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if path.exists() {
+                std::fs::remove_file(path)?;
+                std::fs::rename(tmp_path, path)?;
+                Ok(())
+            } else {
+                Err(ModelError::Io(err))
+            }
+        }
+    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -370,6 +385,26 @@ mod tests {
         let result =
             manager.ensure_model_cached(&ModelId::Custom("bad-download".to_string()), &downloader);
         assert!(matches!(result, Err(ModelError::SizeMismatch { .. })));
+    }
+
+    #[test]
+    fn model_manager_replaces_existing_cached_model() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let spec = ModelSpec::new(ModelId::Custom("replace".to_string()), "replace.bin")
+            .with_download_url("file://mock")
+            .with_size(4);
+        manager.register_model(spec);
+        manager
+            .write_model_bytes(&ModelId::Custom("replace".to_string()), &[0u8, 1u8])
+            .expect("write stale model");
+
+        let downloader = MockDownloader::new(vec![3u8, 4u8, 5u8, 6u8]);
+        let path = manager
+            .ensure_model_cached(&ModelId::Custom("replace".to_string()), &downloader)
+            .expect("replace model");
+        let contents = std::fs::read(&path).expect("read replaced model");
+        assert_eq!(contents, vec![3u8, 4u8, 5u8, 6u8]);
     }
 
     #[test]
