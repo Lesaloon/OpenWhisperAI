@@ -7,7 +7,9 @@ use core_input::{
 use serde::{Deserialize, Serialize};
 use shared_types::{AppSettings, PttLevel, PttState};
 use std::{
+    io::ErrorKind,
     path::{Path, PathBuf},
+    process::Command,
     sync::{mpsc, Arc, Mutex},
 };
 use transcribe_engine::{FsDownloader, ModelId, ModelManager, ModelSpec, TranscriptionPipeline};
@@ -78,17 +80,82 @@ impl TextInjector for ClipboardInjector {
             .set_text(text.to_string())
             .map_err(|err| err.to_string())?;
 
-        let mut enigo = enigo::Enigo::new();
-        let modifier = if cfg!(target_os = "macos") {
-            enigo::Key::Meta
-        } else {
-            enigo::Key::Control
-        };
-        enigo.key_down(modifier);
-        enigo.key_click(enigo::Key::Layout('v'));
-        enigo.key_up(modifier);
-        Ok(())
+        paste_from_clipboard()
     }
+}
+
+enum PasteCommandError {
+    NotFound,
+    Failed(String),
+}
+
+fn paste_from_clipboard() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let mut missing = Vec::new();
+
+        for (cmd, args) in paste_command_candidates(wayland) {
+            match run_paste_command(cmd, args) {
+                Ok(()) => return Ok(()),
+                Err(PasteCommandError::NotFound) => missing.push(cmd),
+                Err(PasteCommandError::Failed(message)) => return Err(message),
+            }
+        }
+
+        let helper_hint = if wayland {
+            "wtype (Wayland) or xdotool (X11)"
+        } else {
+            "xdotool (X11) or wtype (Wayland)"
+        };
+        Err(format!(
+            "missing paste helper: install {} to enable text injection",
+            helper_hint
+        ))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("text injection is only supported on Linux via xdotool or wtype".to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn paste_command_candidates(wayland: bool) -> Vec<(&'static str, &'static [&'static str])> {
+    if wayland {
+        vec![
+            ("wtype", &["-M", "ctrl", "-k", "v", "-m", "ctrl"]),
+            ("xdotool", &["key", "--clearmodifiers", "ctrl+v"]),
+        ]
+    } else {
+        vec![
+            ("xdotool", &["key", "--clearmodifiers", "ctrl+v"]),
+            ("wtype", &["-M", "ctrl", "-k", "v", "-m", "ctrl"]),
+        ]
+    }
+}
+
+fn run_paste_command(cmd: &str, args: &[&str]) -> Result<(), PasteCommandError> {
+    let output = Command::new(cmd).args(args).output().map_err(|err| {
+        if err.kind() == ErrorKind::NotFound {
+            PasteCommandError::NotFound
+        } else {
+            PasteCommandError::Failed(format!("failed to run `{}`: {}", cmd, err))
+        }
+    })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let message = stderr.trim();
+    let details = if message.is_empty() {
+        format!("command `{}` exited with {}", cmd, output.status)
+    } else {
+        format!("command `{}` failed: {}", cmd, message)
+    };
+    Err(PasteCommandError::Failed(details))
 }
 
 pub trait Transcriber: Send + Sync {
@@ -689,6 +756,19 @@ mod tests {
         };
         let result = payload.to_hotkey();
         assert!(result.is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn paste_candidates_prefer_wayland_helper() {
+        let wayland_candidates = paste_command_candidates(true);
+        let x11_candidates = paste_command_candidates(false);
+
+        assert_eq!(
+            wayland_candidates.first().map(|(cmd, _)| *cmd),
+            Some("wtype")
+        );
+        assert_eq!(x11_candidates.first().map(|(cmd, _)| *cmd), Some("xdotool"));
     }
 
     #[derive(Clone)]
