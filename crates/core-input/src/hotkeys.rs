@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{mpsc, Arc, Mutex},
 };
 
@@ -80,15 +80,35 @@ pub struct Hotkey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HotkeyState {
+    Pressed,
+    Released,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HotkeyTrigger {
+    Pressed,
+    Released,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HotkeyEvent {
     pub key: HotkeyKey,
     pub modifiers: HotkeyModifiers,
+    pub state: HotkeyState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotkeyBinding {
+    pub action: String,
+    pub trigger: HotkeyTrigger,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotkeyActionEvent {
     pub action: String,
     pub hotkey: Hotkey,
+    pub state: HotkeyState,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -101,7 +121,7 @@ pub enum HotkeyError {
 
 #[derive(Debug, Default)]
 pub struct HotkeyManager {
-    bindings: HashMap<Hotkey, String>,
+    bindings: HashMap<Hotkey, HotkeyBinding>,
 }
 
 impl HotkeyManager {
@@ -109,11 +129,26 @@ impl HotkeyManager {
         Self::default()
     }
 
-    pub fn register(&mut self, hotkey: Hotkey, action: impl Into<String>) -> Option<String> {
-        self.bindings.insert(hotkey, action.into())
+    pub fn register(&mut self, hotkey: Hotkey, action: impl Into<String>) -> Option<HotkeyBinding> {
+        self.register_with_trigger(hotkey, HotkeyTrigger::Pressed, action)
     }
 
-    pub fn unregister(&mut self, hotkey: &Hotkey) -> Option<String> {
+    pub fn register_with_trigger(
+        &mut self,
+        hotkey: Hotkey,
+        trigger: HotkeyTrigger,
+        action: impl Into<String>,
+    ) -> Option<HotkeyBinding> {
+        self.bindings.insert(
+            hotkey,
+            HotkeyBinding {
+                action: action.into(),
+                trigger,
+            },
+        )
+    }
+
+    pub fn unregister(&mut self, hotkey: &Hotkey) -> Option<HotkeyBinding> {
         self.bindings.remove(hotkey)
     }
 
@@ -122,8 +157,19 @@ impl HotkeyManager {
             key: event.key,
             modifiers: event.modifiers,
         };
-        self.bindings.get(&hotkey).map(String::as_str)
+        self.bindings
+            .get(&hotkey)
+            .filter(|binding| trigger_matches(binding.trigger, event.state))
+            .map(|binding| binding.action.as_str())
     }
+}
+
+fn trigger_matches(trigger: HotkeyTrigger, state: HotkeyState) -> bool {
+    matches!(
+        (trigger, state),
+        (HotkeyTrigger::Pressed, HotkeyState::Pressed)
+            | (HotkeyTrigger::Released, HotkeyState::Released)
+    )
 }
 
 pub struct HotkeyListenerHandle {
@@ -172,6 +218,7 @@ fn spawn_listener(
 ) -> HotkeyListenerHandle {
     let join_handle = std::thread::spawn(move || {
         let mut modifiers = ModifierState::default();
+        let mut pressed_keys = HashSet::new();
         let mut handler = move |event: rdev::Event| match event.event_type {
             rdev::EventType::KeyPress(key) => {
                 if modifiers.update(key, true) {
@@ -179,9 +226,14 @@ fn spawn_listener(
                 }
 
                 if let Some(mapped) = map_key(key) {
+                    if !pressed_keys.insert(mapped) {
+                        return;
+                    }
+
                     let event = HotkeyEvent {
                         key: mapped,
                         modifiers: modifiers.as_modifiers(),
+                        state: HotkeyState::Pressed,
                     };
 
                     if let Ok(manager) = manager.lock() {
@@ -192,6 +244,7 @@ fn spawn_listener(
                                     key: event.key,
                                     modifiers: event.modifiers,
                                 },
+                                state: event.state,
                             });
                         }
                     }
@@ -199,6 +252,31 @@ fn spawn_listener(
             }
             rdev::EventType::KeyRelease(key) => {
                 modifiers.update(key, false);
+
+                if let Some(mapped) = map_key(key) {
+                    if !pressed_keys.remove(&mapped) {
+                        return;
+                    }
+
+                    let event = HotkeyEvent {
+                        key: mapped,
+                        modifiers: modifiers.as_modifiers(),
+                        state: HotkeyState::Released,
+                    };
+
+                    if let Ok(manager) = manager.lock() {
+                        if let Some(action) = manager.resolve(&event) {
+                            let _ = sender.send(HotkeyActionEvent {
+                                action: action.to_string(),
+                                hotkey: Hotkey {
+                                    key: event.key,
+                                    modifiers: event.modifiers,
+                                },
+                                state: event.state,
+                            });
+                        }
+                    }
+                }
             }
             _ => {}
         };
@@ -306,9 +384,11 @@ fn map_key(key: rdev::Key) -> Option<HotkeyKey> {
 #[cfg(test)]
 mod tests {
     use super::{
-        spawn_listener, Hotkey, HotkeyError, HotkeyEvent, HotkeyKey, HotkeyManager, HotkeyModifiers,
+        spawn_listener, Hotkey, HotkeyError, HotkeyEvent, HotkeyKey, HotkeyManager,
+        HotkeyModifiers, HotkeyState, HotkeyTrigger,
     };
     use std::sync::{mpsc, Arc, Mutex};
+    use std::time::SystemTime;
 
     #[test]
     fn hotkey_manager_resolves_event() {
@@ -333,6 +413,7 @@ mod tests {
                 shift: false,
                 meta: false,
             },
+            state: HotkeyState::Pressed,
         };
 
         assert_eq!(manager.resolve(&event), Some("toggle-capture"));
@@ -361,9 +442,35 @@ mod tests {
                 shift: false,
                 meta: false,
             },
+            state: HotkeyState::Pressed,
         };
 
         assert_eq!(manager.resolve(&event), None);
+    }
+
+    #[test]
+    fn hotkey_manager_respects_trigger_type() {
+        let mut manager = HotkeyManager::new();
+        let hotkey = Hotkey {
+            key: HotkeyKey::F10,
+            modifiers: HotkeyModifiers::none(),
+        };
+
+        manager.register_with_trigger(hotkey, HotkeyTrigger::Released, "release-only");
+
+        let pressed_event = HotkeyEvent {
+            key: HotkeyKey::F10,
+            modifiers: HotkeyModifiers::none(),
+            state: HotkeyState::Pressed,
+        };
+        let released_event = HotkeyEvent {
+            key: HotkeyKey::F10,
+            modifiers: HotkeyModifiers::none(),
+            state: HotkeyState::Released,
+        };
+
+        assert_eq!(manager.resolve(&pressed_event), None);
+        assert_eq!(manager.resolve(&released_event), Some("release-only"));
     }
 
     #[test]
@@ -379,5 +486,44 @@ mod tests {
         assert!(
             matches!(result, Err(HotkeyError::Listener(message)) if message == "listen failed")
         );
+    }
+
+    #[test]
+    fn hotkey_listener_ignores_repeat_presses() {
+        let manager = Arc::new(Mutex::new(HotkeyManager::new()));
+        let hotkey = Hotkey {
+            key: HotkeyKey::F9,
+            modifiers: HotkeyModifiers::none(),
+        };
+        manager
+            .lock()
+            .expect("manager")
+            .register(hotkey, "toggle-capture");
+
+        let (sender, receiver) = mpsc::channel();
+        let handle = spawn_listener(manager, sender, |mut handler| {
+            let press = rdev::Event {
+                time: SystemTime::now(),
+                name: None,
+                event_type: rdev::EventType::KeyPress(rdev::Key::F9),
+            };
+            handler(press.clone());
+            handler(press);
+
+            let release = rdev::Event {
+                time: SystemTime::now(),
+                name: None,
+                event_type: rdev::EventType::KeyRelease(rdev::Key::F9),
+            };
+            handler(release);
+            Ok(())
+        });
+
+        handle.join().expect("listener join");
+
+        let result = receiver.try_iter().collect::<Vec<_>>();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].action, "toggle-capture");
+        assert_eq!(result[0].state, HotkeyState::Pressed);
     }
 }

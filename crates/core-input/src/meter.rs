@@ -13,6 +13,14 @@ impl LevelReading {
             clipped: false,
         }
     }
+
+    pub fn rms_dbfs(&self) -> f32 {
+        to_dbfs(self.rms)
+    }
+
+    pub fn peak_dbfs(&self) -> f32 {
+        to_dbfs(self.peak)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -35,8 +43,12 @@ impl LevelMeter {
         let mut peak = 0.0_f32;
         let mut sum = 0.0_f32;
         let mut clipped = false;
+        let mut count = 0_u32;
 
         for &sample in samples {
+            if !sample.is_finite() {
+                continue;
+            }
             let magnitude = sample.abs();
             if magnitude > peak {
                 peak = magnitude;
@@ -45,9 +57,14 @@ impl LevelMeter {
                 clipped = true;
             }
             sum += sample * sample;
+            count += 1;
         }
 
-        let rms = (sum / samples.len() as f32).sqrt();
+        if count == 0 {
+            return;
+        }
+
+        let rms = (sum / count as f32).sqrt();
 
         self.reading = LevelReading { rms, peak, clipped };
     }
@@ -64,6 +81,14 @@ impl LevelMeter {
 impl Default for LevelMeter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn to_dbfs(value: f32) -> f32 {
+    if value <= 0.0 {
+        f32::NEG_INFINITY
+    } else {
+        20.0 * value.log10()
     }
 }
 
@@ -95,5 +120,23 @@ mod tests {
         meter.update(&[0.2, -1.2]);
         let reading = meter.reading();
         assert!(reading.clipped);
+    }
+
+    #[test]
+    fn meter_skips_non_finite_samples() {
+        let mut meter = LevelMeter::new();
+        meter.update(&[f32::NAN, f32::INFINITY, -0.75]);
+        let reading = meter.reading();
+        assert_relative_eq!(reading.peak, 0.75, epsilon = 1e-6);
+        assert_relative_eq!(reading.rms, 0.75, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn meter_reports_dbfs() {
+        let mut meter = LevelMeter::new();
+        meter.update(&[1.0]);
+        let reading = meter.reading();
+        assert_relative_eq!(reading.peak_dbfs(), 0.0, epsilon = 1e-6);
+        assert_relative_eq!(reading.rms_dbfs(), 0.0, epsilon = 1e-6);
     }
 }

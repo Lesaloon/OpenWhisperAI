@@ -92,6 +92,10 @@ impl<B: AudioBackend> AudioCaptureService<B> {
         self.selected_device.as_ref()
     }
 
+    pub fn is_running(&self) -> bool {
+        self.stream.is_some()
+    }
+
     pub fn start(&mut self) -> Result<(), AudioError> {
         if self.stream.is_some() {
             return Err(AudioError::AlreadyRunning);
@@ -104,6 +108,12 @@ impl<B: AudioBackend> AudioCaptureService<B> {
                 .default_input_device()?
                 .ok_or(AudioError::NoInputDevice)?,
         };
+
+        if let Ok(mut meter) = self.meter.lock() {
+            meter.reset();
+        }
+
+        self.selected_device = Some(device.clone());
 
         let meter = Arc::clone(&self.meter);
         let on_samples = move |samples: &[f32]| {
@@ -412,6 +422,58 @@ mod tests {
         }]);
         let service = AudioCaptureService::new(backend);
         let reading = service.level().expect("meter");
+        assert_eq!(reading, LevelReading::silence());
+    }
+
+    #[test]
+    fn capture_service_tracks_running_state() {
+        let backend = MockAudioBackend::new(vec![AudioDevice {
+            id: "0:Mock".to_string(),
+            name: "Mock".to_string(),
+        }]);
+        let mut service = AudioCaptureService::new(backend);
+        assert!(!service.is_running());
+        service.start().expect("start capture");
+        assert!(service.is_running());
+        service.stop().expect("stop capture");
+        assert!(!service.is_running());
+    }
+
+    #[test]
+    fn capture_service_sets_default_device_on_start() {
+        let backend = MockAudioBackend::new(vec![AudioDevice {
+            id: "0:Mock".to_string(),
+            name: "Mock".to_string(),
+        }]);
+        let mut service = AudioCaptureService::new(backend);
+        service.start().expect("start capture");
+
+        let selected = service.selected_device().expect("device selected");
+        assert_eq!(selected.id, "0:Mock");
+    }
+
+    #[test]
+    fn capture_service_resets_meter_on_start() {
+        let backend = MockAudioBackend::new(vec![AudioDevice {
+            id: "0:Mock".to_string(),
+            name: "Mock".to_string(),
+        }]);
+        let controller_handle = backend.controller.clone();
+        let mut service = AudioCaptureService::new(backend);
+        service.start().expect("start capture");
+
+        let controller = controller_handle
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+            .expect("controller ready");
+        controller.push_samples(&[0.5, -0.5]);
+        assert!(service.level().expect("meter").peak > 0.0);
+
+        service.stop().expect("stop capture");
+        service.start().expect("start capture again");
+
+        let reading = service.level().expect("meter after restart");
         assert_eq!(reading, LevelReading::silence());
     }
 
