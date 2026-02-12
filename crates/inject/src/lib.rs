@@ -66,7 +66,8 @@ where
         };
 
         if let Err(err) = self.clipboard.set_text(text) {
-            return self.typing_fallback_with_restore(text, err, previous);
+            let restore_result = restore_clipboard(&mut self.clipboard, previous);
+            return self.typing_fallback_after_restore(text, err, restore_result);
         }
 
         match self.clipboard.paste() {
@@ -103,6 +104,24 @@ where
                     clipboard: Some(clipboard_error),
                 })
             }
+        }
+    }
+
+    fn typing_fallback_after_restore(
+        &mut self,
+        text: &str,
+        clipboard_error: ClipboardError,
+        restore_result: Result<(), ClipboardError>,
+    ) -> Result<InjectOutcome, InjectError> {
+        let _ = restore_result;
+        let typing_result = self.typer.type_text(text);
+
+        match typing_result {
+            Ok(()) => Ok(InjectOutcome::TypedFallback),
+            Err(typing_err) => Err(InjectError::Typing {
+                source: typing_err,
+                clipboard: Some(clipboard_error),
+            }),
         }
     }
 }
@@ -269,6 +288,25 @@ mod tests {
                 Op::Set("fallback".to_string()),
                 Op::Set("keep".to_string()),
             ]
+        );
+        assert_eq!(typer.typed, vec!["fallback".to_string()]);
+    }
+
+    #[test]
+    fn clears_clipboard_when_set_fails_and_previous_empty() {
+        let mut clipboard = MockClipboard::new(None);
+        clipboard.fail_set = true;
+        let typer = MockTyper::default();
+        let mut injector = Injector::new(clipboard, typer);
+
+        let outcome = injector.inject_text("fallback").unwrap();
+        let (clipboard, typer) = injector.into_parts();
+
+        assert_eq!(outcome, InjectOutcome::TypedFallback);
+        assert_eq!(clipboard.content, None);
+        assert_eq!(
+            clipboard.ops,
+            vec![Op::Get, Op::Set("fallback".to_string()), Op::Clear,]
         );
         assert_eq!(typer.typed, vec!["fallback".to_string()]);
     }
