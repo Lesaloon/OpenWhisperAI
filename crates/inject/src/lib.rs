@@ -51,7 +51,19 @@ where
     }
 
     pub fn inject_text(&mut self, text: &str) -> Result<InjectOutcome, InjectError> {
-        let previous = self.clipboard.get_text().unwrap_or(None);
+        let previous = match self.clipboard.get_text() {
+            Ok(value) => value,
+            Err(err) => {
+                return self
+                    .typer
+                    .type_text(text)
+                    .map(|()| InjectOutcome::TypedFallback)
+                    .map_err(|typing_err| InjectError::Typing {
+                        source: typing_err,
+                        clipboard: Some(err),
+                    });
+            }
+        };
 
         if let Err(err) = self.clipboard.set_text(text) {
             return self
@@ -112,6 +124,7 @@ mod tests {
     struct MockClipboard {
         content: Option<String>,
         ops: Vec<Op>,
+        fail_get: bool,
         fail_set: bool,
         fail_paste: bool,
         fail_clear: bool,
@@ -122,6 +135,7 @@ mod tests {
             Self {
                 content,
                 ops: Vec::new(),
+                fail_get: false,
                 fail_set: false,
                 fail_paste: false,
                 fail_clear: false,
@@ -132,6 +146,9 @@ mod tests {
     impl Clipboard for MockClipboard {
         fn get_text(&mut self) -> Result<Option<String>, ClipboardError> {
             self.ops.push(Op::Get);
+            if self.fail_get {
+                return Err(ClipboardError("get failed"));
+            }
             Ok(self.content.clone())
         }
 
@@ -259,5 +276,44 @@ mod tests {
             clipboard.ops,
             vec![Op::Get, Op::Set("alpha".to_string()), Op::Paste, Op::Clear,]
         );
+    }
+
+    #[test]
+    fn falls_back_to_typing_when_get_text_fails() {
+        let mut clipboard = MockClipboard::new(Some("keep".to_string()));
+        clipboard.fail_get = true;
+        let typer = MockTyper::default();
+        let mut injector = Injector::new(clipboard, typer);
+
+        let outcome = injector.inject_text("typed").unwrap();
+        let (clipboard, typer) = injector.into_parts();
+
+        assert_eq!(outcome, InjectOutcome::TypedFallback);
+        assert_eq!(clipboard.content, Some("keep".to_string()));
+        assert_eq!(clipboard.ops, vec![Op::Get]);
+        assert_eq!(typer.typed, vec!["typed".to_string()]);
+    }
+
+    #[test]
+    fn returns_typing_error_when_get_text_and_typing_fail() {
+        let mut clipboard = MockClipboard::new(Some("keep".to_string()));
+        clipboard.fail_get = true;
+        let mut typer = MockTyper::default();
+        typer.fail = true;
+        let mut injector = Injector::new(clipboard, typer);
+
+        let result = injector.inject_text("typed");
+        let (clipboard, typer) = injector.into_parts();
+
+        assert!(matches!(
+            result,
+            Err(InjectError::Typing {
+                source: TypingError("typing failed"),
+                clipboard: Some(ClipboardError("get failed")),
+            })
+        ));
+        assert_eq!(clipboard.content, Some("keep".to_string()));
+        assert_eq!(clipboard.ops, vec![Op::Get]);
+        assert!(typer.typed.is_empty());
     }
 }
