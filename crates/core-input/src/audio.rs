@@ -124,7 +124,7 @@ impl<B: AudioBackend> AudioCaptureService<B> {
         };
 
         let meter = Arc::clone(&self.meter);
-        let on_samples = move |samples: &[f32]| {
+        let mut on_samples = move |samples: &[f32]| {
             if let Ok(mut meter) = meter.lock() {
                 meter.update(samples);
             }
