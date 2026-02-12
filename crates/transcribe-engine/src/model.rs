@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ModelId {
@@ -60,6 +60,8 @@ impl ModelSpec {
 pub enum ModelError {
     #[error("model '{0}' is not registered")]
     UnregisteredModel(String),
+    #[error("model filename is invalid: {0}")]
+    InvalidFilename(String),
     #[error("model file not found at {0}")]
     MissingFile(String),
     #[error("model size mismatch: expected {expected} bytes, got {actual} bytes")]
@@ -92,6 +94,7 @@ impl ModelManager {
             .registry
             .get(id)
             .ok_or_else(|| ModelError::UnregisteredModel(id.display_name()))?;
+        validate_model_filename(&spec.filename)?;
         Ok(self.root.join(&spec.filename))
     }
 
@@ -100,6 +103,7 @@ impl ModelManager {
             .registry
             .get(id)
             .ok_or_else(|| ModelError::UnregisteredModel(id.display_name()))?;
+        validate_model_filename(&spec.filename)?;
         let path = self.root.join(&spec.filename);
         if !path.exists() {
             return Err(ModelError::MissingFile(path.display().to_string()));
@@ -132,6 +136,23 @@ impl ModelManager {
         file.write_all(bytes)?;
         Ok(path)
     }
+}
+
+fn validate_model_filename(filename: &str) -> Result<(), ModelError> {
+    let path = Path::new(filename);
+    if filename.is_empty() {
+        return Err(ModelError::InvalidFilename(filename.to_string()));
+    }
+    if path.is_absolute() {
+        return Err(ModelError::InvalidFilename(filename.to_string()));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(ModelError::InvalidFilename(filename.to_string()));
+    }
+    Ok(())
 }
 
 fn sha256_hex_from_file(path: &Path) -> Result<String, ModelError> {
@@ -205,5 +226,27 @@ mod tests {
 
         let result = manager.ensure_model_available(&ModelId::Custom("bad".to_string()));
         assert!(matches!(result, Err(ModelError::ChecksumMismatch { .. })));
+    }
+
+    #[test]
+    fn model_manager_rejects_path_traversal_filenames() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let spec = ModelSpec::new(ModelId::Custom("bad".to_string()), "../bad.bin");
+        manager.register_model(spec);
+
+        let result = manager.model_path(&ModelId::Custom("bad".to_string()));
+        assert!(matches!(result, Err(ModelError::InvalidFilename(_))));
+    }
+
+    #[test]
+    fn model_manager_rejects_absolute_filenames() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let spec = ModelSpec::new(ModelId::Custom("abs".to_string()), "/tmp/abs.bin");
+        manager.register_model(spec);
+
+        let result = manager.model_path(&ModelId::Custom("abs".to_string()));
+        assert!(matches!(result, Err(ModelError::InvalidFilename(_))));
     }
 }

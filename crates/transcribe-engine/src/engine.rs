@@ -52,9 +52,8 @@ impl<B: WhisperBindings> TranscriptionEngine for WhisperCppEngine<B> {
         if audio.is_empty() {
             return Err(EngineError::EmptyAudio);
         }
-        Ok(TranscriptionResult {
-            text: String::new(),
-        })
+        let text = B::transcribe(&self.context, audio)?;
+        Ok(TranscriptionResult { text })
     }
 }
 
@@ -77,6 +76,10 @@ mod tests {
             Ok(MockContext {
                 _path: path.to_path_buf(),
             })
+        }
+
+        fn transcribe(_context: &Self::Context, _audio: &[f32]) -> Result<String, BindingError> {
+            Ok("mock transcript".to_string())
         }
     }
 
@@ -114,5 +117,65 @@ mod tests {
         .expect("engine loads");
         let result = engine.transcribe(&[]);
         assert!(matches!(result, Err(EngineError::EmptyAudio)));
+    }
+
+    #[test]
+    fn engine_uses_bindings_for_transcription() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let spec = ModelSpec::new(ModelId::Custom("mock".to_string()), "mock.bin").with_size(1);
+        manager.register_model(spec);
+        manager
+            .write_model_bytes(&ModelId::Custom("mock".to_string()), &[0u8])
+            .expect("write model");
+
+        let engine = WhisperCppEngine::<MockBindings>::with_bindings(
+            &manager,
+            ModelId::Custom("mock".to_string()),
+        )
+        .expect("engine loads");
+        let result = engine.transcribe(&[0.1, 0.2, 0.3]).expect("transcribe");
+        assert_eq!(result.text, "mock transcript");
+    }
+
+    #[test]
+    fn engine_returns_binding_errors() {
+        struct ErrorBindings;
+
+        impl WhisperBindings for ErrorBindings {
+            type Context = MockContext;
+
+            fn init_from_file(path: &std::path::Path) -> Result<Self::Context, BindingError> {
+                Ok(MockContext {
+                    _path: path.to_path_buf(),
+                })
+            }
+
+            fn transcribe(
+                _context: &Self::Context,
+                _audio: &[f32],
+            ) -> Result<String, BindingError> {
+                Err(BindingError::Unavailable)
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let mut manager = ModelManager::new(dir.path());
+        let spec = ModelSpec::new(ModelId::Custom("mock".to_string()), "mock.bin").with_size(1);
+        manager.register_model(spec);
+        manager
+            .write_model_bytes(&ModelId::Custom("mock".to_string()), &[0u8])
+            .expect("write model");
+
+        let engine = WhisperCppEngine::<ErrorBindings>::with_bindings(
+            &manager,
+            ModelId::Custom("mock".to_string()),
+        )
+        .expect("engine loads");
+        let result = engine.transcribe(&[0.1]);
+        assert!(matches!(
+            result,
+            Err(EngineError::Binding(BindingError::Unavailable))
+        ));
     }
 }

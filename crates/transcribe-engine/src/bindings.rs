@@ -12,6 +12,7 @@ pub trait WhisperBindings {
     type Context;
 
     fn init_from_file(path: &Path) -> Result<Self::Context, BindingError>;
+    fn transcribe(context: &Self::Context, audio: &[f32]) -> Result<String, BindingError>;
 }
 
 pub struct WhisperCppBindings;
@@ -56,6 +57,10 @@ impl WhisperBindings for WhisperCppBindings {
         let ctx = std::ptr::NonNull::new(ctx).ok_or(BindingError::InitFailed)?;
         Ok(WhisperContext { ctx })
     }
+
+    fn transcribe(_context: &Self::Context, _audio: &[f32]) -> Result<String, BindingError> {
+        Err(BindingError::Unavailable)
+    }
 }
 
 #[cfg(not(feature = "whisper-ffi"))]
@@ -66,6 +71,10 @@ impl WhisperBindings for WhisperCppBindings {
     type Context = WhisperContext;
 
     fn init_from_file(_path: &Path) -> Result<Self::Context, BindingError> {
+        Err(BindingError::Unavailable)
+    }
+
+    fn transcribe(_context: &Self::Context, _audio: &[f32]) -> Result<String, BindingError> {
         Err(BindingError::Unavailable)
     }
 }
