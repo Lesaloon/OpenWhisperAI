@@ -20,6 +20,50 @@ pub enum BackendEvent {
     Reset,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelInstallStatus {
+    Ready,
+    Installed,
+    Downloading,
+    Queued,
+    Pending,
+    Failed,
+    Error,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelStatusItem {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub status: ModelInstallStatus,
+    #[serde(default)]
+    pub total_bytes: u64,
+    #[serde(default)]
+    pub downloaded_bytes: u64,
+    #[serde(default)]
+    pub speed_bytes_per_sec: u64,
+    #[serde(default)]
+    pub eta_seconds: u64,
+    #[serde(default)]
+    pub progress: f32,
+    #[serde(default)]
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ModelStatusPayload {
+    #[serde(default)]
+    pub models: Vec<ModelStatusItem>,
+    #[serde(default)]
+    pub active_model: Option<String>,
+    #[serde(default)]
+    pub queue_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayPosition {
