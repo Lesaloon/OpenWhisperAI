@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/core-input",
     "crates/shared-types",
     "crates/transcribe-engine",
     "apps/tauri/src-tauri",

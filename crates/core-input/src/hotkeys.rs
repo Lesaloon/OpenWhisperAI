@@ -1,0 +1,351 @@
+use std::{
+    collections::HashMap,
+    sync::{mpsc, Arc, Mutex},
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HotkeyKey {
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+    J,
+    K,
+    L,
+    M,
+    N,
+    O,
+    P,
+    Q,
+    R,
+    S,
+    T,
+    U,
+    V,
+    W,
+    X,
+    Y,
+    Z,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    Space,
+    Enter,
+    Escape,
+    Tab,
+    Backspace,
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct HotkeyModifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub meta: bool,
+}
+
+impl HotkeyModifiers {
+    pub const fn none() -> Self {
+        Self {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            meta: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Hotkey {
+    pub key: HotkeyKey,
+    pub modifiers: HotkeyModifiers,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HotkeyEvent {
+    pub key: HotkeyKey,
+    pub modifiers: HotkeyModifiers,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotkeyActionEvent {
+    pub action: String,
+    pub hotkey: Hotkey,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum HotkeyError {
+    #[error("hotkey listener error: {0}")]
+    Listener(String),
+    #[error("hotkey manager lock was poisoned")]
+    ManagerLockPoisoned,
+}
+
+#[derive(Debug, Default)]
+pub struct HotkeyManager {
+    bindings: HashMap<Hotkey, String>,
+}
+
+impl HotkeyManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&mut self, hotkey: Hotkey, action: impl Into<String>) -> Option<String> {
+        self.bindings.insert(hotkey, action.into())
+    }
+
+    pub fn unregister(&mut self, hotkey: &Hotkey) -> Option<String> {
+        self.bindings.remove(hotkey)
+    }
+
+    pub fn resolve(&self, event: &HotkeyEvent) -> Option<&str> {
+        let hotkey = Hotkey {
+            key: event.key,
+            modifiers: event.modifiers,
+        };
+        self.bindings.get(&hotkey).map(String::as_str)
+    }
+}
+
+pub struct HotkeyListenerHandle {
+    join_handle: std::thread::JoinHandle<()>,
+}
+
+impl HotkeyListenerHandle {
+    pub fn join(self) -> Result<(), HotkeyError> {
+        self.join_handle
+            .join()
+            .map_err(|_| HotkeyError::Listener("listener thread panicked".to_string()))
+    }
+}
+
+pub struct GlobalHotkeyListener {
+    manager: Arc<Mutex<HotkeyManager>>,
+}
+
+impl GlobalHotkeyListener {
+    pub fn new(manager: Arc<Mutex<HotkeyManager>>) -> Self {
+        Self { manager }
+    }
+
+    pub fn start(
+        &self,
+    ) -> Result<(HotkeyListenerHandle, mpsc::Receiver<HotkeyActionEvent>), HotkeyError> {
+        let (sender, receiver) = mpsc::channel();
+        let manager = Arc::clone(&self.manager);
+
+        let join_handle = std::thread::spawn(move || {
+            let mut modifiers = ModifierState::default();
+            let handler = move |event: rdev::Event| match event.event_type {
+                rdev::EventType::KeyPress(key) => {
+                    if modifiers.update(key, true) {
+                        return;
+                    }
+
+                    if let Some(mapped) = map_key(key) {
+                        let event = HotkeyEvent {
+                            key: mapped,
+                            modifiers: modifiers.as_modifiers(),
+                        };
+
+                        if let Ok(manager) = manager.lock() {
+                            if let Some(action) = manager.resolve(&event) {
+                                let _ = sender.send(HotkeyActionEvent {
+                                    action: action.to_string(),
+                                    hotkey: Hotkey {
+                                        key: event.key,
+                                        modifiers: event.modifiers,
+                                    },
+                                });
+                            }
+                        }
+                    }
+                }
+                rdev::EventType::KeyRelease(key) => {
+                    modifiers.update(key, false);
+                }
+                _ => {}
+            };
+
+            if let Err(error) = rdev::listen(handler) {
+                eprintln!("hotkey listener error: {error:?}");
+            }
+        });
+
+        Ok((HotkeyListenerHandle { join_handle }, receiver))
+    }
+}
+
+#[derive(Default)]
+struct ModifierState {
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    meta: bool,
+}
+
+impl ModifierState {
+    fn update(&mut self, key: rdev::Key, pressed: bool) -> bool {
+        match key {
+            rdev::Key::ControlLeft | rdev::Key::ControlRight => {
+                self.ctrl = pressed;
+                true
+            }
+            rdev::Key::ShiftLeft | rdev::Key::ShiftRight => {
+                self.shift = pressed;
+                true
+            }
+            rdev::Key::Alt | rdev::Key::AltGr => {
+                self.alt = pressed;
+                true
+            }
+            rdev::Key::MetaLeft | rdev::Key::MetaRight => {
+                self.meta = pressed;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn as_modifiers(&self) -> HotkeyModifiers {
+        HotkeyModifiers {
+            ctrl: self.ctrl,
+            alt: self.alt,
+            shift: self.shift,
+            meta: self.meta,
+        }
+    }
+}
+
+fn map_key(key: rdev::Key) -> Option<HotkeyKey> {
+    match key {
+        rdev::Key::KeyA => Some(HotkeyKey::A),
+        rdev::Key::KeyB => Some(HotkeyKey::B),
+        rdev::Key::KeyC => Some(HotkeyKey::C),
+        rdev::Key::KeyD => Some(HotkeyKey::D),
+        rdev::Key::KeyE => Some(HotkeyKey::E),
+        rdev::Key::KeyF => Some(HotkeyKey::F),
+        rdev::Key::KeyG => Some(HotkeyKey::G),
+        rdev::Key::KeyH => Some(HotkeyKey::H),
+        rdev::Key::KeyI => Some(HotkeyKey::I),
+        rdev::Key::KeyJ => Some(HotkeyKey::J),
+        rdev::Key::KeyK => Some(HotkeyKey::K),
+        rdev::Key::KeyL => Some(HotkeyKey::L),
+        rdev::Key::KeyM => Some(HotkeyKey::M),
+        rdev::Key::KeyN => Some(HotkeyKey::N),
+        rdev::Key::KeyO => Some(HotkeyKey::O),
+        rdev::Key::KeyP => Some(HotkeyKey::P),
+        rdev::Key::KeyQ => Some(HotkeyKey::Q),
+        rdev::Key::KeyR => Some(HotkeyKey::R),
+        rdev::Key::KeyS => Some(HotkeyKey::S),
+        rdev::Key::KeyT => Some(HotkeyKey::T),
+        rdev::Key::KeyU => Some(HotkeyKey::U),
+        rdev::Key::KeyV => Some(HotkeyKey::V),
+        rdev::Key::KeyW => Some(HotkeyKey::W),
+        rdev::Key::KeyX => Some(HotkeyKey::X),
+        rdev::Key::KeyY => Some(HotkeyKey::Y),
+        rdev::Key::KeyZ => Some(HotkeyKey::Z),
+        rdev::Key::F1 => Some(HotkeyKey::F1),
+        rdev::Key::F2 => Some(HotkeyKey::F2),
+        rdev::Key::F3 => Some(HotkeyKey::F3),
+        rdev::Key::F4 => Some(HotkeyKey::F4),
+        rdev::Key::F5 => Some(HotkeyKey::F5),
+        rdev::Key::F6 => Some(HotkeyKey::F6),
+        rdev::Key::F7 => Some(HotkeyKey::F7),
+        rdev::Key::F8 => Some(HotkeyKey::F8),
+        rdev::Key::F9 => Some(HotkeyKey::F9),
+        rdev::Key::F10 => Some(HotkeyKey::F10),
+        rdev::Key::F11 => Some(HotkeyKey::F11),
+        rdev::Key::F12 => Some(HotkeyKey::F12),
+        rdev::Key::Space => Some(HotkeyKey::Space),
+        rdev::Key::Return => Some(HotkeyKey::Enter),
+        rdev::Key::Escape => Some(HotkeyKey::Escape),
+        rdev::Key::Tab => Some(HotkeyKey::Tab),
+        rdev::Key::Backspace => Some(HotkeyKey::Backspace),
+        rdev::Key::LeftArrow => Some(HotkeyKey::Left),
+        rdev::Key::RightArrow => Some(HotkeyKey::Right),
+        rdev::Key::UpArrow => Some(HotkeyKey::Up),
+        rdev::Key::DownArrow => Some(HotkeyKey::Down),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Hotkey, HotkeyEvent, HotkeyKey, HotkeyManager, HotkeyModifiers};
+
+    #[test]
+    fn hotkey_manager_resolves_event() {
+        let mut manager = HotkeyManager::new();
+        let hotkey = Hotkey {
+            key: HotkeyKey::F9,
+            modifiers: HotkeyModifiers {
+                ctrl: true,
+                alt: false,
+                shift: false,
+                meta: false,
+            },
+        };
+
+        manager.register(hotkey, "toggle-capture");
+
+        let event = HotkeyEvent {
+            key: HotkeyKey::F9,
+            modifiers: HotkeyModifiers {
+                ctrl: true,
+                alt: false,
+                shift: false,
+                meta: false,
+            },
+        };
+
+        assert_eq!(manager.resolve(&event), Some("toggle-capture"));
+    }
+
+    #[test]
+    fn hotkey_manager_requires_exact_modifiers() {
+        let mut manager = HotkeyManager::new();
+        let hotkey = Hotkey {
+            key: HotkeyKey::F9,
+            modifiers: HotkeyModifiers {
+                ctrl: true,
+                alt: false,
+                shift: false,
+                meta: false,
+            },
+        };
+
+        manager.register(hotkey, "toggle-capture");
+
+        let event = HotkeyEvent {
+            key: HotkeyKey::F9,
+            modifiers: HotkeyModifiers {
+                ctrl: false,
+                alt: false,
+                shift: false,
+                meta: false,
+            },
+        };
+
+        assert_eq!(manager.resolve(&event), None);
+    }
+}
