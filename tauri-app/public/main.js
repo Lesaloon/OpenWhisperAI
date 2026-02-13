@@ -9,6 +9,7 @@ const overlayPosition = document.querySelector("#overlayPosition");
 const overlayStatus = document.querySelector("#overlayStatus");
 const overlayBody = document.querySelector("#overlayBody");
 const overlayHint = document.querySelector("#overlayHint");
+const transcriptOutput = document.querySelector("#transcriptOutput");
 const backendLog = document.querySelector("#backendLog");
 const pttManual = document.querySelector("#pttManual");
 const helloButton = document.querySelector("#helloButton");
@@ -17,8 +18,11 @@ const ipcDetails = document.querySelector("#ipcDetails");
 const showTimestamps = document.querySelector("#showTimestamps");
 const autoPunctuation = document.querySelector("#autoPunctuation");
 const hotkeySearch = document.querySelector("#hotkeySearch");
+const activeModelValue = document.querySelector("#activeModelValue");
+const queueValue = document.querySelector("#queueValue");
 
 const models = [];
+let invokeCommand = null;
 
 const hotkeys = [
   { action: "Push-to-talk", keys: "Ctrl + Alt + Space" },
@@ -37,7 +41,7 @@ function renderModels() {
   if (models.length === 0) {
     const empty = document.createElement("p");
     empty.className = "muted";
-    empty.textContent = "No model status yet. Start recording to trigger download.";
+    empty.textContent = "No model status yet. Connect to the backend.";
     modelList.appendChild(empty);
     return;
   }
@@ -47,15 +51,18 @@ function renderModels() {
     card.className = "model-card";
 
     const progressValue = formatPercent(model.progress);
-    const progressLabel = `${formatBytes(model.downloaded)} of ${formatBytes(model.size)}`;
+    const progressLabel = model.size > 0
+      ? `${formatBytes(model.downloaded)} of ${formatBytes(model.size)}`
+      : "Size unknown";
     const etaLabel = model.eta > 0 ? formatDuration(model.eta) : "-";
     const speedLabel = model.speed > 0 ? formatRate(model.speed) : "-";
+    const statusLabel = formatModelStatus(model.status);
 
     const header = document.createElement("header");
     const title = document.createElement("h3");
     title.textContent = model.name;
     const status = document.createElement("span");
-    status.textContent = model.status;
+    status.textContent = statusLabel;
     header.append(title, status);
 
     const progress = document.createElement("div");
@@ -75,7 +82,27 @@ function renderModels() {
     speedMeta.textContent = speedLabel;
     meta.append(progressMeta, etaMeta, speedMeta);
 
-    card.append(header, progress, meta);
+    const actions = document.createElement("div");
+    actions.className = "model-actions";
+    const actionButton = document.createElement("button");
+    actionButton.type = "button";
+    actionButton.className = "model-action";
+    const action = resolveModelAction(model);
+    actionButton.textContent = action.label;
+    actionButton.disabled = action.disabled;
+    actionButton.dataset.action = action.action;
+    actionButton.dataset.modelId = model.id;
+    if (action.variant) {
+      actionButton.classList.add(action.variant);
+    }
+    if (!action.disabled && action.action !== "none") {
+      actionButton.addEventListener("click", () => {
+        handleModelAction(model.id, action.action);
+      });
+    }
+    actions.append(actionButton);
+
+    card.append(header, progress, meta, actions);
     fragment.appendChild(card);
   });
 
@@ -118,6 +145,7 @@ const backendStateLabels = {
 let backendState = "idle";
 let pttState = "idle";
 let latestTranscript = "";
+let lastTranscriptFetch = "";
 
 function setBackendLog(text) {
   if (backendLog) {
@@ -149,6 +177,27 @@ function setOverlayBody(text, muted = false) {
   overlayBody.appendChild(line);
 }
 
+function setTranscriptOutput(text) {
+  if (!transcriptOutput) return;
+  transcriptOutput.textContent = text;
+}
+
+async function refreshLastTranscript() {
+  if (!invokeCommand) return;
+  try {
+    const text = await invokeCommand("ipc_get_last_transcript");
+    if (typeof text === "string" && text.length > 0 && text !== lastTranscriptFetch) {
+      lastTranscriptFetch = text;
+      latestTranscript = text;
+      setOverlayBody(text);
+      setTranscriptOutput(text);
+      setBackendLog("transcription synced");
+    }
+  } catch (error) {
+    setBackendLog("transcription sync failed");
+  }
+}
+
 function updateOverlayMode(value) {
   overlayMode.textContent = value;
   overlayPosition.querySelectorAll("button").forEach((button) => {
@@ -167,6 +216,75 @@ function normalizeBackendState(state) {
     return { status: key, message: state[key]?.message };
   }
   return { status: "idle" };
+}
+
+function formatModelStatus(status) {
+  const normalized = String(status || "unknown").replace(/_/g, " ");
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function resolveModelAction(model) {
+  const status = String(model.status || "unknown").toLowerCase();
+  if (model.active) {
+    return { label: "Selected", action: "none", disabled: true, variant: "selected" };
+  }
+  if (status === "downloading" || status === "queued") {
+    return { label: "Downloading", action: "none", disabled: true, variant: "busy" };
+  }
+  if (status === "ready" || status === "installed") {
+    return { label: "Select", action: "select", disabled: false, variant: "primary" };
+  }
+  if (status === "failed") {
+    return { label: "Retry Download", action: "download", disabled: false, variant: "warn" };
+  }
+  return { label: "Download", action: "download", disabled: false, variant: "primary" };
+}
+
+function applyModelPayload(payload) {
+  if (!payload?.models) return;
+  models.splice(
+    0,
+    models.length,
+    ...payload.models.map((model) => ({
+      id: model.id ?? model.name,
+      name: model.name,
+      status: String(model.status ?? "unknown"),
+      progress: Math.round((model.progress ?? 0) * 100) / 100,
+      size: model.total_bytes ?? 0,
+      downloaded: model.downloaded_bytes ?? 0,
+      eta: model.eta_seconds ?? 0,
+      speed: model.speed_bytes_per_sec ?? 0,
+      active: Boolean(model.active),
+    }))
+  );
+  renderModels();
+  updateModelStats(payload);
+}
+
+function updateModelStats(payload) {
+  if (activeModelValue) {
+    activeModelValue.textContent = payload?.active_model || "None";
+  }
+  if (queueValue) {
+    const count = payload?.queue_count ?? 0;
+    queueValue.textContent = `${count} download${count === 1 ? "" : "s"}`;
+  }
+}
+
+async function handleModelAction(modelId, action) {
+  if (!invokeCommand) {
+    setBackendLog("model action failed: IPC unavailable");
+    return;
+  }
+  try {
+    if (action === "download") {
+      await invokeCommand("ipc_model_download", { model: modelId });
+    } else if (action === "select") {
+      await invokeCommand("ipc_model_select", { model: modelId });
+    }
+  } catch (error) {
+    setBackendLog(`model action failed: ${error}`);
+  }
 }
 
 function applyBackendState(state) {
@@ -254,6 +372,10 @@ async function initializeBackendBridge() {
     return;
   }
 
+  invokeCommand = invoke;
+  refreshLastTranscript();
+  setInterval(refreshLastTranscript, 1500);
+
   if (invoke) {
     try {
       const state = await invoke("ipc_get_state");
@@ -261,18 +383,7 @@ async function initializeBackendBridge() {
       const ptt = await invoke("ipc_ptt_get_state");
       applyPttState(ptt);
       const modelPayload = await invoke("ipc_get_models");
-      if (modelPayload?.models) {
-        models.splice(0, models.length, ...modelPayload.models.map((model) => ({
-          name: model.name,
-          status: String(model.status ?? "Unknown"),
-          progress: Math.round((model.progress ?? 0) * 100) / 100,
-          size: model.total_bytes ?? 0,
-          downloaded: model.downloaded_bytes ?? 0,
-          eta: model.eta_seconds ?? 0,
-          speed: model.speed_bytes_per_sec ?? 0,
-        })));
-        renderModels();
-      }
+      applyModelPayload(modelPayload);
       const logs = await invoke("ipc_get_logs");
       if (Array.isArray(logs) && logs.length > 0) {
         setBackendLog(logs[logs.length - 1].message);
@@ -296,12 +407,25 @@ async function initializeBackendBridge() {
         setOverlayBody("Transcribing…", true);
       } else if (pttState === "armed") {
         setOverlayBody(latestTranscript || "Ready. Hold Ctrl + Alt + Space to dictate.", true);
+        if (!latestTranscript && invokeCommand) {
+          invokeCommand("ipc_get_last_transcript")
+            .then((text) => {
+              if (typeof text === "string" && text.length > 0) {
+                latestTranscript = text;
+                setOverlayBody(text);
+                setTranscriptOutput(text);
+              }
+            })
+            .catch(() => {});
+        }
       }
     });
     listen("ptt_transcription", (event) => {
       if (typeof event?.payload === "string") {
         latestTranscript = event.payload;
         setOverlayBody(event.payload || "(empty transcript)");
+        setTranscriptOutput(event.payload || "(empty transcript)");
+        setBackendLog("transcription received");
       }
     });
     listen("ptt_error", (event) => {
@@ -310,18 +434,7 @@ async function initializeBackendBridge() {
       }
     });
     listen("model-download-status", (event) => {
-      if (event?.payload?.models) {
-        models.splice(0, models.length, ...event.payload.models.map((model) => ({
-          name: model.name,
-          status: String(model.status ?? "Unknown"),
-          progress: Math.round((model.progress ?? 0) * 100) / 100,
-          size: model.total_bytes ?? 0,
-          downloaded: model.downloaded_bytes ?? 0,
-          eta: model.eta_seconds ?? 0,
-          speed: model.speed_bytes_per_sec ?? 0,
-        })));
-        renderModels();
-      }
+      applyModelPayload(event?.payload);
     });
   }
 
@@ -331,18 +444,7 @@ async function initializeBackendBridge() {
         const ptt = await invoke("ipc_ptt_get_state");
         applyPttState(ptt);
         const modelPayload = await invoke("ipc_get_models");
-        if (modelPayload?.models) {
-          models.splice(0, models.length, ...modelPayload.models.map((model) => ({
-            name: model.name,
-            status: String(model.status ?? "Unknown"),
-            progress: Math.round((model.progress ?? 0) * 100) / 100,
-            size: model.total_bytes ?? 0,
-            downloaded: model.downloaded_bytes ?? 0,
-            eta: model.eta_seconds ?? 0,
-            speed: model.speed_bytes_per_sec ?? 0,
-          })));
-          renderModels();
-        }
+        applyModelPayload(modelPayload);
       } catch (error) {
         setBackendLog("Polling failed");
       }
@@ -403,6 +505,7 @@ renderHotkeys(hotkeys);
 updateLatency();
 updateOverlayState();
 setOverlayBody("Ready. Hold Ctrl + Alt + Space to dictate.", true);
+setTranscriptOutput("Latest transcript will appear here.");
 if (helloButton) {
   helloButton.textContent = "Hello (JS)";
   helloButton.dataset.js = "loaded";

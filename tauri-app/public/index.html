@@ -19,15 +19,15 @@
           <div class="chip" id="ipcStatus">IPC: unknown</div>
           <div class="chip" id="ipcDetails">IPC details: -</div>
         </div>
-        <div class="hero-card">
-          <div class="hero-stat">
-            <span>Active model</span>
-            <strong>Whisper Large v3</strong>
-          </div>
-          <div class="hero-stat">
-            <span>Queue</span>
-            <strong>2 downloads</strong>
-          </div>
+          <div class="hero-card">
+            <div class="hero-stat">
+              <span>Active model</span>
+              <strong id="activeModelValue">None</strong>
+            </div>
+            <div class="hero-stat">
+              <span>Queue</span>
+              <strong id="queueValue">0 downloads</strong>
+            </div>
           <div class="hero-stat">
             <span>Overlay</span>
             <strong>Live preview</strong>
@@ -132,6 +132,9 @@
                 <span class="badge">Auto highlight keywords</span>
                 <span class="sr-only" id="backendLog" aria-live="polite"></span>
               </div>
+            </div>
+            <div class="transcript-output" id="transcriptOutput" aria-live="polite">
+              Latest transcript will appear here.
             </div>
             <div class="setting-row compact">
               <div>

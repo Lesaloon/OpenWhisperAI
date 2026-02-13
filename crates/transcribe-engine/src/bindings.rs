@@ -1,3 +1,5 @@
+use log::warn;
+use std::env;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -85,12 +87,27 @@ fn run_whisper_cli_with_bin(
     model_path: &Path,
     audio: &[f32],
 ) -> Result<String, BindingError> {
+    let bin_path = Path::new(bin);
+    let bin_dir = bin_path.parent();
     let temp_dir = tempfile::tempdir().map_err(|_| BindingError::InitFailed)?;
     let wav_path = temp_dir.path().join("audio.wav");
     write_wav(&wav_path, audio)?;
     let output_prefix = temp_dir.path().join("whisper-output");
 
-    let output = Command::new(bin)
+    let mut command = Command::new(bin);
+    if cfg!(target_os = "linux") {
+        if let Some(dir) = bin_dir {
+            let current = env::var_os("LD_LIBRARY_PATH").unwrap_or_default();
+            let mut value = dir.as_os_str().to_os_string();
+            if !current.is_empty() {
+                value.push(":");
+                value.push(current);
+            }
+            command.env("LD_LIBRARY_PATH", value);
+        }
+    }
+
+    let output = command
         .arg("-m")
         .arg(model_path)
         .arg("-f")
@@ -108,6 +125,14 @@ fn run_whisper_cli_with_bin(
         })?;
 
     if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!(
+            "whisper cli failed: status={} stdout='{}' stderr='{}'",
+            output.status,
+            stdout.trim(),
+            stderr.trim()
+        );
         return Err(BindingError::InitFailed);
     }
 

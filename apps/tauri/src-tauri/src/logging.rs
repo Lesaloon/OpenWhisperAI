@@ -117,6 +117,7 @@ impl log::Log for BridgeLogger {
             format!("{}", record.args()),
         );
         self.push_entry(entry);
+        eprintln!("[{}] {}", record.level(), record.args());
     }
 
     fn flush(&self) {}

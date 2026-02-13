@@ -3,11 +3,13 @@ mod logging;
 mod ptt;
 mod state;
 mod ui_server;
+mod whisper_cli;
 
 use ipc::{
-    ipc_get_logs, ipc_get_models, ipc_get_settings, ipc_get_state, ipc_hello, ipc_ptt_get_state,
-    ipc_ptt_set_hotkey, ipc_ptt_start, ipc_ptt_stop, ipc_ptt_toggle_recording, ipc_send_event,
-    ipc_set_models, ipc_set_settings, ipc_update_settings, BACKEND_STATE_EVENT, MODEL_STATUS_EVENT,
+    ipc_get_last_transcript, ipc_get_logs, ipc_get_models, ipc_get_settings, ipc_get_state,
+    ipc_hello, ipc_model_download, ipc_model_select, ipc_ptt_get_state, ipc_ptt_set_hotkey,
+    ipc_ptt_start, ipc_ptt_stop, ipc_ptt_toggle_recording, ipc_send_event, ipc_set_models,
+    ipc_set_settings, ipc_update_settings, BACKEND_STATE_EVENT, MODEL_STATUS_EVENT,
 };
 use logging::{attach_app_handle, init_logging};
 use ptt::PTT_STATE_EVENT;
@@ -27,6 +29,11 @@ fn main() {
                 .unwrap_or_else(|| std::env::temp_dir())
                 .join("models");
             log::info!("model root: {}", model_root.display());
+            if let Some(app_data_dir) = app.path_resolver().app_data_dir() {
+                whisper_cli::ensure_whisper_cli(app_data_dir);
+            } else {
+                log::warn!("app data dir unavailable; whisper auto-install skipped");
+            }
             app.manage(state::AppState::new(settings_path, model_root));
             attach_app_handle(app.handle());
             let app_state = app.state::<state::AppState>();
@@ -54,7 +61,10 @@ fn main() {
             ipc_set_settings,
             ipc_get_logs,
             ipc_get_models,
+            ipc_get_last_transcript,
             ipc_set_models,
+            ipc_model_select,
+            ipc_model_download,
             ipc_ptt_start,
             ipc_ptt_stop,
             ipc_ptt_toggle_recording,

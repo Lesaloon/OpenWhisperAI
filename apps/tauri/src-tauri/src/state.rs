@@ -4,6 +4,7 @@ use shared_types::{
     ModelStatusPayload, PttState, SettingsUpdate,
 };
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
@@ -153,15 +154,23 @@ pub struct AppState {
     pub orchestrator: Mutex<BackendOrchestrator>,
     pub models: Arc<Mutex<ModelStore>>,
     pub ptt: PttHandle,
+    model_root: PathBuf,
 }
 
 impl AppState {
     pub fn new(settings_path: PathBuf, model_root: PathBuf) -> Self {
         let models = Arc::new(Mutex::new(ModelStore::new()));
+        if let Ok(mut store) = models.lock() {
+            let payload =
+                crate::ptt::build_model_status_payload(&model_root, None, &HashMap::new());
+            let _ = store.set_models(payload.models);
+            let _ = store.set_active_model(payload.active_model);
+        }
         Self {
             orchestrator: Mutex::new(BackendOrchestrator::new(settings_path)),
             models: Arc::clone(&models),
-            ptt: PttHandle::new(model_root, models),
+            ptt: PttHandle::new(model_root.clone(), models),
+            model_root,
         }
     }
 
@@ -184,11 +193,17 @@ impl AppState {
     pub fn ptt_state(&self) -> PttState {
         self.ptt.state()
     }
+
+    pub fn model_root(&self) -> PathBuf {
+        self.model_root.clone()
+    }
 }
 
 pub struct ModelStore {
     models: Vec<ModelStatusItem>,
     active_model: Option<String>,
+    overrides: HashMap<String, ModelInstallStatus>,
+    last_transcript: Option<String>,
 }
 
 impl ModelStore {
@@ -196,6 +211,8 @@ impl ModelStore {
         Self {
             models: Vec::new(),
             active_model: None,
+            overrides: HashMap::new(),
+            last_transcript: None,
         }
     }
 
@@ -221,6 +238,30 @@ impl ModelStore {
     pub fn set_active_model(&mut self, active_model: Option<String>) -> ModelStatusPayload {
         self.active_model = active_model;
         self.snapshot()
+    }
+
+    pub fn set_override(&mut self, id: impl Into<String>, status: ModelInstallStatus) {
+        self.overrides.insert(id.into(), status);
+    }
+
+    pub fn clear_override(&mut self, id: &str) {
+        self.overrides.remove(id);
+    }
+
+    pub fn overrides_snapshot(&self) -> HashMap<String, ModelInstallStatus> {
+        self.overrides.clone()
+    }
+
+    pub fn active_model(&self) -> Option<String> {
+        self.active_model.clone()
+    }
+
+    pub fn set_last_transcript(&mut self, text: String) {
+        self.last_transcript = Some(text);
+    }
+
+    pub fn last_transcript(&self) -> Option<String> {
+        self.last_transcript.clone()
     }
 }
 

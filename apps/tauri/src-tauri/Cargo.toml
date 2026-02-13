@@ -16,6 +16,8 @@ tauri = { version = "1", features = ["api-all", "custom-protocol"] }
 tiny_http = "0.12"
 transcribe-engine = { path = "../../../crates/transcribe-engine" }
 shared-types = { path = "../../../crates/shared-types" }
+ureq = "2"
+zip = "0.6"
 
 [build-dependencies]
 tauri-build = { version = "1" }

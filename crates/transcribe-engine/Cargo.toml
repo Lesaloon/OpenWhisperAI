@@ -8,6 +8,7 @@ whisper-ffi = []
 
 [dependencies]
 hex = "0.4"
+log = "0.4"
 sha2 = "0.10"
 tempfile = "3.10"
 thiserror = "1.0"
