@@ -19,7 +19,9 @@ use signal_hook::iterator::Signals;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::Manager;
+use tauri::{
+    CustomMenuItem, Icon, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, WindowEvent,
+};
 
 fn main() {
     init_logging();
@@ -33,7 +35,13 @@ fn main() {
     }
 
     let context = tauri::generate_context!();
+    let tray_menu = SystemTrayMenu::new()
+        .add_item(CustomMenuItem::new("show", "Show"))
+        .add_item(CustomMenuItem::new("quit", "Quit"));
+    let tray_icon = Icon::File(std::path::PathBuf::from("icons/icon.png"));
+    let tray = SystemTray::new().with_menu(tray_menu).with_icon(tray_icon);
     tauri::Builder::default()
+        .system_tray(tray)
         .setup(|app| {
             ui_server::maybe_start();
             let settings_path = state::default_settings_path(app.path_resolver().app_config_dir());
@@ -78,6 +86,33 @@ fn main() {
             let _ = app.emit_all(PTT_STATE_EVENT, ptt_state);
             log::info!("tauri backend initialized");
             Ok(())
+        })
+        .on_system_tray_event(|app, event| match event {
+            SystemTrayEvent::LeftClick { .. } => {
+                if let Some(window) = app.get_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
+                "show" => {
+                    if let Some(window) = app.get_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                "quit" => {
+                    app.exit(0);
+                }
+                _ => {}
+            },
+            _ => {}
+        })
+        .on_window_event(|event| {
+            if let WindowEvent::CloseRequested { api, .. } = event.event() {
+                let _ = event.window().hide();
+                api.prevent_close();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             ipc_get_state,
