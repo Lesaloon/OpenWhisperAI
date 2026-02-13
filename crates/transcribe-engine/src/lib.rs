@@ -7,4 +7,7 @@ pub use engine::{
     EngineError, TranscriptionEngine, TranscriptionPipeline, TranscriptionResult,
     TranscriptionWrapper, WhisperCppEngine,
 };
-pub use model::{FsDownloader, ModelDownloader, ModelError, ModelId, ModelManager, ModelSpec};
+pub use model::{
+    AutoDownloader, FsDownloader, HttpDownloader, ModelDownloader, ModelError, ModelId,
+    ModelManager, ModelSpec,
+};

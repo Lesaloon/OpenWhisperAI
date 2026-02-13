@@ -89,10 +89,37 @@ pub trait ModelDownloader {
 
 pub struct FsDownloader;
 
+pub struct HttpDownloader;
+
+pub struct AutoDownloader;
+
 impl ModelDownloader for FsDownloader {
     fn download(&self, url: &str) -> Result<Vec<u8>, ModelError> {
         let path = url.strip_prefix("file://").unwrap_or(url);
         std::fs::read(path).map_err(|_| ModelError::DownloadFailed(url.to_string()))
+    }
+}
+
+impl ModelDownloader for HttpDownloader {
+    fn download(&self, url: &str) -> Result<Vec<u8>, ModelError> {
+        let response = ureq::get(url)
+            .call()
+            .map_err(|_| ModelError::DownloadFailed(url.to_string()))?;
+        let mut reader = response.into_reader();
+        let mut bytes = Vec::new();
+        reader
+            .read_to_end(&mut bytes)
+            .map_err(|_| ModelError::DownloadFailed(url.to_string()))?;
+        Ok(bytes)
+    }
+}
+
+impl ModelDownloader for AutoDownloader {
+    fn download(&self, url: &str) -> Result<Vec<u8>, ModelError> {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return HttpDownloader.download(url);
+        }
+        FsDownloader.download(url)
     }
 }
 

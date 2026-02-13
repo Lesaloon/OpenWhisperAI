@@ -1,11 +1,14 @@
 use crate::logging::emit_app_event;
 use core_input::{
-    AudioBackend, AudioDevice, AudioError, AudioStream, CpalAudioBackend, GlobalHotkeyListener,
-    Hotkey, HotkeyActionEvent, HotkeyKey, HotkeyListenerHandle, HotkeyManager, HotkeyModifiers,
-    HotkeyState, HotkeyTrigger, LevelReading, PttCaptureService,
+    AudioBackend, CpalAudioBackend, GlobalHotkeyListener, Hotkey, HotkeyActionEvent, HotkeyKey,
+    HotkeyListenerHandle, HotkeyManager, HotkeyModifiers, HotkeyState, HotkeyTrigger, LevelReading,
+    PttCaptureService,
 };
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use shared_types::{AppSettings, PttLevel, PttState};
+use shared_types::{
+    AppSettings, ModelInstallStatus, ModelStatusItem, ModelStatusPayload, PttLevel, PttState,
+};
 use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -13,12 +16,13 @@ use std::{
     sync::{mpsc, Arc, Mutex},
     time::Duration,
 };
-use transcribe_engine::{FsDownloader, ModelId, ModelManager, ModelSpec, TranscriptionPipeline};
+use transcribe_engine::{AutoDownloader, ModelId, ModelManager, ModelSpec, TranscriptionPipeline};
 
 pub const PTT_STATE_EVENT: &str = "ptt_state";
 pub const PTT_LEVEL_EVENT: &str = "ptt_level";
 pub const PTT_TRANSCRIPTION_EVENT: &str = "ptt_transcription";
 pub const PTT_ERROR_EVENT: &str = "ptt_error";
+const MODEL_STATUS_EVENT: &str = "model-download-status";
 const TARGET_SAMPLE_RATE: u32 = 16_000;
 
 #[derive(Clone)]
@@ -46,16 +50,23 @@ enum PttRuntimeCommand {
     SetActiveModel {
         active_model: Option<String>,
     },
+    ManualToggle {
+        respond: mpsc::Sender<Result<PttState, String>>,
+    },
 }
 
 impl PttHandle {
-    pub fn new(model_root: PathBuf) -> Self {
+    pub fn new(model_root: PathBuf, models: Arc<Mutex<crate::state::ModelStore>>) -> Self {
+        if matches!(std::env::var("XDG_SESSION_TYPE").as_deref(), Ok("wayland")) {
+            warn!("Wayland session detected: global hotkeys may not work (try X11)");
+        }
         let (sender, receiver) = mpsc::channel();
         let state = Arc::new(Mutex::new(PttState::Idle));
         let state_handle = Arc::clone(&state);
+        let models_handle = Arc::clone(&models);
 
         std::thread::spawn(move || {
-            let mut controller = SystemPttController::new(model_root);
+            let mut controller = SystemPttController::new(model_root, Arc::clone(&models_handle));
             controller.attach_state_store(Arc::clone(&state_handle));
 
             loop {
@@ -82,6 +93,10 @@ impl PttHandle {
                         }
                         PttRuntimeCommand::SetActiveModel { active_model } => {
                             controller.set_active_model(active_model);
+                        }
+                        PttRuntimeCommand::ManualToggle { respond } => {
+                            let result = controller.manual_toggle_recording();
+                            let _ = respond.send(result);
                         }
                     },
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -140,6 +155,14 @@ impl PttHandle {
             .send(PttRuntimeCommand::SetActiveModel { active_model });
     }
 
+    pub fn manual_toggle(&self) -> Result<PttState, String> {
+        let (respond, receiver) = mpsc::channel();
+        self.sender
+            .send(PttRuntimeCommand::ManualToggle { respond })
+            .map_err(|err| err.to_string())?;
+        receiver.recv().map_err(|err| err.to_string())?
+    }
+
     pub fn state(&self) -> PttState {
         self.state
             .lock()
@@ -169,10 +192,10 @@ pub struct PttHotkeyModifiers {
 impl Default for PttHotkeyPayload {
     fn default() -> Self {
         Self {
-            key: "f9".to_string(),
+            key: "space".to_string(),
             modifiers: PttHotkeyModifiers {
-                ctrl: false,
-                alt: false,
+                ctrl: true,
+                alt: true,
                 shift: false,
                 meta: false,
             },
@@ -292,30 +315,48 @@ pub trait Transcriber: Send + Sync {
 }
 
 pub struct PipelineTranscriber {
-    pipeline: TranscriptionPipeline,
+    pipeline: TranscriptionPipeline<transcribe_engine::WhisperCppBindings, AutoDownloader>,
     model_id: ModelId,
+    model_root: PathBuf,
 }
 
 impl PipelineTranscriber {
     pub fn new(model_root: PathBuf, model_id: ModelId) -> Self {
         let mut manager = ModelManager::new(model_root.clone());
-        register_standard_models(&mut manager, &model_root);
+        register_standard_models(&mut manager);
         if let ModelId::Custom(name) = &model_id {
             register_custom_model(&mut manager, &model_root, name);
         }
         Self {
-            pipeline: TranscriptionPipeline::new(manager, FsDownloader),
+            pipeline: TranscriptionPipeline::new(manager, AutoDownloader),
             model_id,
+            model_root,
         }
     }
 }
 
 impl Transcriber for PipelineTranscriber {
     fn transcribe(&self, audio: &[f32]) -> Result<String, String> {
+        let model_path = expected_model_path(&self.model_root, &self.model_id);
+        if !model_path.exists() {
+            info!("model not found; downloading {}", model_path.display());
+        }
+
         self.pipeline
             .transcribe(self.model_id.clone(), audio)
             .map(|result| result.text)
-            .map_err(|err| err.to_string())
+            .map_err(|err| match err {
+                transcribe_engine::EngineError::Model(
+                    transcribe_engine::ModelError::DownloadFailed(url),
+                ) => format!("model download failed: {url}"),
+                transcribe_engine::EngineError::Model(
+                    transcribe_engine::ModelError::MissingDownloadUrl(name),
+                ) => format!("model download url missing for {name}"),
+                transcribe_engine::EngineError::Binding(
+                    transcribe_engine::BindingError::Unavailable,
+                ) => "whisper.cpp CLI not found; set WHISPER_CPP_BIN".to_string(),
+                other => other.to_string(),
+            })
     }
 }
 
@@ -333,19 +374,26 @@ pub struct PttController<B: AudioBackend> {
     injector: Arc<dyn TextInjector>,
     settings: AppSettings,
     model_root: PathBuf,
+    active_model: Option<String>,
+    model_status_override: Option<ModelInstallStatus>,
     state_store: Option<Arc<Mutex<PttState>>>,
+    models: Arc<Mutex<crate::state::ModelStore>>,
 }
 
 pub type SystemPttController = PttController<CpalAudioBackend>;
 
 impl SystemPttController {
-    pub fn new(model_root: PathBuf) -> Self {
-        Self::with_backend(CpalAudioBackend::default(), model_root)
+    pub fn new(model_root: PathBuf, models: Arc<Mutex<crate::state::ModelStore>>) -> Self {
+        Self::with_backend(CpalAudioBackend::default(), model_root, models)
     }
 }
 
 impl<B: AudioBackend> PttController<B> {
-    pub fn with_backend(backend: B, model_root: PathBuf) -> Self {
+    pub fn with_backend(
+        backend: B,
+        model_root: PathBuf,
+        models: Arc<Mutex<crate::state::ModelStore>>,
+    ) -> Self {
         let hotkey = PttHotkeyPayload::default().to_hotkey().unwrap_or(Hotkey {
             key: HotkeyKey::F9,
             modifiers: HotkeyModifiers::none(),
@@ -368,7 +416,10 @@ impl<B: AudioBackend> PttController<B> {
             injector: Arc::new(ClipboardInjector),
             settings: AppSettings::default(),
             model_root,
+            active_model: Some("base".to_string()),
+            model_status_override: None,
             state_store: None,
+            models,
         }
     }
 
@@ -394,7 +445,11 @@ impl<B: AudioBackend> PttController<B> {
 
     pub fn set_active_model(&mut self, model_name: Option<String>) {
         let model_id = model_id_from_name(model_name.as_deref());
+        let display_name = model_id.display_name();
         self.transcriber = Arc::new(PipelineTranscriber::new(self.model_root.clone(), model_id));
+        self.active_model = model_name.or_else(|| Some(display_name));
+        self.model_status_override = None;
+        self.update_model_status_snapshot();
     }
 
     pub fn update_settings(&mut self, settings: AppSettings) {
@@ -428,6 +483,7 @@ impl<B: AudioBackend> PttController<B> {
         self.set_active_model(active_model);
         self.prepare_audio(&settings)?;
         self.armed = true;
+        self.update_model_status_snapshot();
         self.set_state(PttState::Armed);
         Ok(self.state.clone())
     }
@@ -532,6 +588,7 @@ impl<B: AudioBackend> PttController<B> {
         if event.action != "ptt" {
             return Ok(None);
         }
+        info!("ptt hotkey {:?}", event.state);
         self.capture
             .handle_hotkey_action(event)
             .map_err(|err| err.to_string())?;
@@ -543,6 +600,7 @@ impl<B: AudioBackend> PttController<B> {
             }
             HotkeyState::Released => {
                 self.set_state(PttState::Processing);
+                self.mark_model_downloading();
                 let audio = self.capture.take_audio().map_err(|err| err.to_string())?;
                 let (sample_rate, channels) = self
                     .capture
@@ -561,10 +619,43 @@ impl<B: AudioBackend> PttController<B> {
         }
     }
 
+    fn manual_toggle_recording(&mut self) -> Result<PttState, String> {
+        if !self.armed {
+            let settings = self.settings.clone();
+            let active_model = self.active_model.clone();
+            self.arm(settings, active_model)?;
+        }
+
+        let next_state = if self.state == PttState::Capturing {
+            HotkeyState::Released
+        } else {
+            HotkeyState::Pressed
+        };
+        let event = HotkeyActionEvent {
+            action: "ptt".to_string(),
+            hotkey: self.hotkey.clone(),
+            state: next_state,
+        };
+        let work = self.handle_hotkey_action(&event)?;
+        if let Some(work) = work {
+            let transcription = work.transcriber.transcribe(&work.audio);
+            if let Ok(text) = &transcription {
+                if work.auto_export && !text.is_empty() {
+                    let _ = work.injector.inject(text);
+                }
+            }
+            self.complete_transcription(transcription);
+        }
+
+        Ok(self.state.clone())
+    }
+
     fn complete_transcription(&mut self, result: Result<String, String>) {
         match result {
             Ok(text) => {
                 emit_app_event(PTT_TRANSCRIPTION_EVENT, &text);
+                info!("transcription complete ({} chars)", text.len());
+                self.mark_model_ready();
                 self.set_state(if self.armed {
                     PttState::Armed
                 } else {
@@ -573,6 +664,8 @@ impl<B: AudioBackend> PttController<B> {
             }
             Err(err) => {
                 self.emit_error(&err);
+                warn!("transcription failed: {err}");
+                self.mark_model_failed();
                 self.set_state(if self.armed {
                     PttState::Armed
                 } else {
@@ -601,6 +694,34 @@ impl<B: AudioBackend> PttController<B> {
             *guard = next.clone();
         }
         emit_app_event(PTT_STATE_EVENT, &next);
+    }
+
+    fn update_model_status_snapshot(&self) {
+        let payload = build_model_status_payload(
+            &self.model_root,
+            self.active_model.as_deref(),
+            self.model_status_override.clone(),
+        );
+        if let Ok(mut models) = self.models.lock() {
+            let _ = models.set_models(payload.models.clone());
+            let _ = models.set_active_model(payload.active_model.clone());
+        }
+        emit_app_event(MODEL_STATUS_EVENT, &payload);
+    }
+
+    fn mark_model_downloading(&mut self) {
+        self.model_status_override = Some(ModelInstallStatus::Downloading);
+        self.update_model_status_snapshot();
+    }
+
+    fn mark_model_ready(&mut self) {
+        self.model_status_override = Some(ModelInstallStatus::Ready);
+        self.update_model_status_snapshot();
+    }
+
+    fn mark_model_failed(&mut self) {
+        self.model_status_override = Some(ModelInstallStatus::Failed);
+        self.update_model_status_snapshot();
     }
 }
 
@@ -743,7 +864,111 @@ fn model_id_from_name(name: Option<&str>) -> ModelId {
     }
 }
 
-fn register_standard_models(manager: &mut ModelManager, root: &Path) {
+fn build_model_status_payload(
+    root: &Path,
+    active: Option<&str>,
+    override_status: Option<ModelInstallStatus>,
+) -> ModelStatusPayload {
+    let mut items = Vec::new();
+    let standard = [
+        ModelId::Tiny,
+        ModelId::Base,
+        ModelId::Small,
+        ModelId::Medium,
+        ModelId::Large,
+    ];
+
+    for model_id in standard {
+        let id = model_id.display_name();
+        let filename = format!("ggml-{}.bin", id);
+        let path = root.join(&filename);
+        let mut status = if path.exists() {
+            ModelInstallStatus::Ready
+        } else {
+            ModelInstallStatus::Pending
+        };
+        let is_active = active.map_or(false, |name| name == id);
+        if is_active {
+            if let Some(override_status) = &override_status {
+                status = override_status.clone();
+            }
+        }
+        let progress = if status == ModelInstallStatus::Ready {
+            100.0
+        } else {
+            0.0
+        };
+        items.push(ModelStatusItem {
+            id: id.clone(),
+            name: id,
+            status,
+            total_bytes: 0,
+            downloaded_bytes: 0,
+            speed_bytes_per_sec: 0,
+            eta_seconds: 0,
+            progress,
+            active: is_active,
+        });
+    }
+
+    if let Some(active_name) = active {
+        if !items.iter().any(|item| item.id == active_name) {
+            let filename = format!("{active_name}.bin");
+            let path = root.join(&filename);
+            let mut status = if path.exists() {
+                ModelInstallStatus::Ready
+            } else {
+                ModelInstallStatus::Pending
+            };
+            if let Some(override_status) = &override_status {
+                status = override_status.clone();
+            }
+            let progress = if status == ModelInstallStatus::Ready {
+                100.0
+            } else {
+                0.0
+            };
+            items.push(ModelStatusItem {
+                id: active_name.to_string(),
+                name: active_name.to_string(),
+                status,
+                total_bytes: 0,
+                downloaded_bytes: 0,
+                speed_bytes_per_sec: 0,
+                eta_seconds: 0,
+                progress,
+                active: true,
+            });
+        }
+    }
+
+    let queue_count = items
+        .iter()
+        .filter(|model| {
+            matches!(
+                model.status,
+                ModelInstallStatus::Downloading
+                    | ModelInstallStatus::Queued
+                    | ModelInstallStatus::Pending
+            )
+        })
+        .count();
+
+    ModelStatusPayload {
+        models: items,
+        active_model: active.map(|name| name.to_string()),
+        queue_count,
+    }
+}
+
+fn expected_model_path(root: &Path, model_id: &ModelId) -> PathBuf {
+    match model_id {
+        ModelId::Custom(name) => root.join(format!("{name}.bin")),
+        _ => root.join(format!("ggml-{}.bin", model_id.display_name())),
+    }
+}
+
+fn register_standard_models(manager: &mut ModelManager) {
     let standard = [
         ModelId::Tiny,
         ModelId::Base,
@@ -754,7 +979,7 @@ fn register_standard_models(manager: &mut ModelManager, root: &Path) {
     for model_id in standard {
         let filename = format!("ggml-{}.bin", model_id.display_name());
         let spec = ModelSpec::new(model_id, filename.clone())
-            .with_download_url(file_url(root.join(&filename)));
+            .with_download_url(model_download_url(&filename));
         manager.register_model(spec);
     }
 }
@@ -770,6 +995,10 @@ fn file_url(path: PathBuf) -> String {
     format!("file://{}", path.display())
 }
 
+fn model_download_url(filename: &str) -> String {
+    format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{filename}")
+}
+
 fn emit_level(reading: LevelReading) {
     let level = PttLevel {
         rms: reading.rms,
@@ -781,6 +1010,7 @@ fn emit_level(reading: LevelReading) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core_input::{AudioDevice, AudioError, AudioStream};
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
@@ -937,7 +1167,8 @@ mod tests {
         let backend = MockAudioBackend::new();
         let controller_handle = backend.controller.clone();
         let (inject_tx, inject_rx) = mpsc::channel();
-        let mut controller = PttController::with_backend(backend, std::env::temp_dir());
+        let models = Arc::new(Mutex::new(crate::state::ModelStore::new()));
+        let mut controller = PttController::with_backend(backend, std::env::temp_dir(), models);
 
         controller
             .arm(AppSettings::default(), Some("base".to_string()))

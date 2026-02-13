@@ -1,0 +1,7 @@
+set -e
+
+cd apps/tauri/src-tauri
+
+OPENWHISPERAI_UI_SERVER=0 \
+  GDK_BACKEND=x11 WINIT_UNIX_BACKEND=x11 GDK_GL=disable WEBKIT_DISABLE_COMPOSITING_MODE=1 \
+  cargo run

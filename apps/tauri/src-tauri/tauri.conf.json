@@ -2,19 +2,23 @@
   "build": {
     "beforeBuildCommand": "",
     "beforeDevCommand": "",
-    "devPath": "http://localhost:5173",
-    "distDir": "../dist"
+    "devPath": "tauri://localhost",
+    "distDir": "public"
   },
   "package": {
     "productName": "OpenWhisperAI",
     "version": "0.1.0"
   },
   "tauri": {
+    "allowlist": {
+      "all": true
+    },
     "bundle": {
       "identifier": "com.openwhisperai.app"
     },
     "windows": [
       {
+        "label": "main",
         "title": "OpenWhisperAI",
         "width": 1024,
         "height": 720

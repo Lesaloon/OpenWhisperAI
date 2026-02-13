@@ -151,16 +151,17 @@ impl BackendOrchestrator {
 
 pub struct AppState {
     pub orchestrator: Mutex<BackendOrchestrator>,
-    pub models: Mutex<ModelStore>,
+    pub models: Arc<Mutex<ModelStore>>,
     pub ptt: PttHandle,
 }
 
 impl AppState {
     pub fn new(settings_path: PathBuf, model_root: PathBuf) -> Self {
+        let models = Arc::new(Mutex::new(ModelStore::new()));
         Self {
             orchestrator: Mutex::new(BackendOrchestrator::new(settings_path)),
-            models: Mutex::new(ModelStore::new()),
-            ptt: PttHandle::new(model_root),
+            models: Arc::clone(&models),
+            ptt: PttHandle::new(model_root, models),
         }
     }
 
@@ -209,6 +210,16 @@ impl ModelStore {
     pub fn set(&mut self, payload: ModelStatusPayload) -> ModelStatusPayload {
         self.models = payload.models;
         self.active_model = payload.active_model;
+        self.snapshot()
+    }
+
+    pub fn set_models(&mut self, models: Vec<ModelStatusItem>) -> ModelStatusPayload {
+        self.models = models;
+        self.snapshot()
+    }
+
+    pub fn set_active_model(&mut self, active_model: Option<String>) -> ModelStatusPayload {
+        self.active_model = active_model;
         self.snapshot()
     }
 }

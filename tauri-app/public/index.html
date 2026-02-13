@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OpenWhisperAI Settings</title>
-    <link rel="stylesheet" href="/src/styles.css" />
+    <title>OpenWhisperAI Settings (dev)</title>
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="app">
@@ -15,6 +15,9 @@
           <p class="subtitle">
             Tune input capture, overlay behavior, model downloads, and hotkeys in one place.
           </p>
+          <div class="chip" id="uiBuild">UI build: pending</div>
+          <div class="chip" id="ipcStatus">IPC: unknown</div>
+          <div class="chip" id="ipcDetails">IPC details: -</div>
         </div>
         <div class="hero-card">
           <div class="hero-stat">
@@ -123,6 +126,8 @@
                 <p class="muted"><span class="time">00:27</span> Capture summary enabled.</p>
               </div>
               <div class="overlay-footer">
+                <button class="chip" id="pttManual" type="button" aria-pressed="false" onclick="document.getElementById('overlayBody').textContent='PTT inline clicked'">Start PTT</button>
+                <button class="chip" id="helloButton" type="button" onclick="document.getElementById('overlayBody').textContent='Hello inline clicked'">Hello</button>
                 <span class="badge" id="overlayHint" aria-live="polite">Auto punctuation on</span>
                 <span class="badge">Auto highlight keywords</span>
                 <span class="sr-only" id="backendLog" aria-live="polite"></span>
@@ -189,6 +194,39 @@
         </section>
       </main>
     </div>
-    <script type="module" src="/src/main.js"></script>
+    <script>
+      (function () {
+        var stamp = new Date().toISOString();
+        var uiBuild = document.getElementById("uiBuild");
+        if (uiBuild) uiBuild.textContent = "UI build: " + stamp;
+        var overlayBody = document.getElementById("overlayBody");
+        if (overlayBody) {
+          overlayBody.innerHTML = "<p class=\"muted\">UI booted: " + stamp + "</p>";
+        }
+        var ipcDetails = document.getElementById("ipcDetails");
+        if (ipcDetails) {
+          var tauri = window.__TAURI__;
+          var hasIpc = typeof window.__TAURI_IPC__ === "function";
+          var keys = tauri ? Object.keys(tauri).join(",") : "-";
+          ipcDetails.textContent = "IPC details: tauri=" + Boolean(tauri) + ", ipc=" + hasIpc + ", keys=" + keys;
+        }
+      })();
+    </script>
+    <script>
+      (async function () {
+        var overlayBody = document.getElementById("overlayBody");
+        try {
+          await import("./main.js");
+          if (overlayBody) {
+            overlayBody.innerHTML = "<p class=\"muted\">main.js loaded</p>";
+          }
+        } catch (err) {
+          if (overlayBody) {
+            overlayBody.innerHTML =
+              "<p class=\"muted\">main.js failed: " + (err && err.message ? err.message : err) + "</p>";
+          }
+        }
+      })();
+    </script>
   </body>
 </html>

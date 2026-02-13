@@ -24,7 +24,77 @@ fn ensure_icon() {
     }
 }
 
+fn sync_public_assets() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| "".into());
+    let source_dir = PathBuf::from(&manifest_dir)
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tauri-app")
+        .join("public");
+    let target_dir = PathBuf::from(&manifest_dir).join("public");
+
+    emit_rerun_if_changed(&source_dir);
+
+    if !source_dir.exists() {
+        panic!("missing source assets: {}", source_dir.display());
+    }
+
+    if target_dir.exists() {
+        let _ = std::fs::remove_dir_all(&target_dir);
+    }
+    if let Err(err) = std::fs::create_dir_all(&target_dir) {
+        panic!("failed to create public dir: {err}");
+    }
+
+    copy_dir_recursive(&source_dir, &target_dir);
+}
+
+fn emit_rerun_if_changed(source: &PathBuf) {
+    if !source.exists() {
+        return;
+    }
+    let mut stack = vec![source.clone()];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    println!("cargo:rerun-if-changed={}", path.display());
+                }
+            }
+        }
+    }
+}
+
+fn copy_dir_recursive(source: &PathBuf, target: &PathBuf) {
+    let entries = match std::fs::read_dir(source) {
+        Ok(entries) => entries,
+        Err(err) => panic!("failed to read {}: {err}", source.display()),
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = match path.file_name() {
+            Some(name) => name,
+            None => continue,
+        };
+        let target_path = target.join(file_name);
+        if path.is_dir() {
+            if let Err(err) = std::fs::create_dir_all(&target_path) {
+                panic!("failed to create dir {}: {err}", target_path.display());
+            }
+            copy_dir_recursive(&path, &target_path);
+        } else if let Err(err) = std::fs::copy(&path, &target_path) {
+            panic!("failed to copy {}: {err}", path.display());
+        }
+    }
+}
+
 fn main() {
     ensure_icon();
+    sync_public_assets();
     tauri_build::build();
 }

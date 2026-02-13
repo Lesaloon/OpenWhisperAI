@@ -93,12 +93,35 @@ pub fn ipc_ptt_start(state: tauri::State<AppState>) -> Result<PttState, String> 
     let settings = state.lock_orchestrator().settings();
     let active_model = state.lock_models().snapshot().active_model;
     let handle = state.ptt_handle();
-    handle.start(settings, active_model)
+    let result = handle.start(settings, active_model);
+    if let Ok(next) = &result {
+        log::info!("ptt start -> {next:?}");
+    } else if let Err(err) = &result {
+        log::warn!("ptt start failed: {err}");
+    }
+    result
 }
 
 #[tauri::command]
 pub fn ipc_ptt_stop(state: tauri::State<AppState>) -> Result<PttState, String> {
-    state.ptt_handle().stop()
+    let result = state.ptt_handle().stop();
+    if let Ok(next) = &result {
+        log::info!("ptt stop -> {next:?}");
+    } else if let Err(err) = &result {
+        log::warn!("ptt stop failed: {err}");
+    }
+    result
+}
+
+#[tauri::command]
+pub fn ipc_ptt_toggle_recording(state: tauri::State<AppState>) -> Result<PttState, String> {
+    let result = state.ptt_handle().manual_toggle();
+    if let Ok(next) = &result {
+        log::info!("ptt manual toggle -> {next:?}");
+    } else if let Err(err) = &result {
+        log::warn!("ptt manual toggle failed: {err}");
+    }
+    result
 }
 
 #[tauri::command]
@@ -112,4 +135,22 @@ pub fn ipc_ptt_set_hotkey(
 #[tauri::command]
 pub fn ipc_ptt_get_state(state: tauri::State<AppState>) -> PttState {
     state.ptt_state()
+}
+
+#[tauri::command]
+pub fn ipc_hello() -> String {
+    println!("hello from UI");
+    eprintln!("hello from UI");
+    log::info!("hello from UI");
+    "hello from backend".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipc_hello_returns_message() {
+        assert_eq!(ipc_hello(), "hello from backend");
+    }
 }
