@@ -792,6 +792,17 @@ impl<B: AudioBackend> PttController<B> {
     fn complete_transcription(&mut self, result: Result<String, String>) {
         match result {
             Ok(text) => {
+                if text.trim().is_empty() {
+                    emit_app_event(PTT_ERROR_EVENT, &"no speech detected".to_string());
+                    info!("transcription empty");
+                    self.mark_model_ready();
+                    self.set_state(if self.armed {
+                        PttState::Armed
+                    } else {
+                        PttState::Idle
+                    });
+                    return;
+                }
                 if let Ok(mut models) = self.models.lock() {
                     models.set_last_transcript(text.clone());
                 }

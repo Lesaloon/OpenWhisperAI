@@ -20,7 +20,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
-    CustomMenuItem, Icon, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, WindowEvent,
+    CustomMenuItem, Icon, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, WindowBuilder,
+    WindowEvent, WindowUrl,
 };
 
 fn main() {
@@ -61,6 +62,7 @@ fn main() {
             let app_state = app.state::<state::AppState>();
             spawn_signal_listener(app_state.ptt_handle());
             control_server::start(app_state.ptt_handle());
+            spawn_indicator_window(app, app_state.ptt_handle());
             if let Some(dir) = app.path_resolver().app_data_dir() {
                 write_pid_file(&dir);
             }
@@ -138,6 +140,72 @@ fn main() {
         ])
         .run(context)
         .expect("error while running tauri application");
+}
+
+fn spawn_indicator_window(app: &tauri::App, ptt_handle: ptt::PttHandle) {
+    log::info!("indicator spawn start");
+    let url = WindowUrl::App("indicator.html".into());
+    let indicator = WindowBuilder::new(app, "indicator", url)
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .resizable(false)
+        .skip_taskbar(true)
+        .focused(false)
+        .visible(false)
+        .title("OpenWhisperAI Indicator")
+        .inner_size(220.0, 40.0)
+        .build();
+
+    let Ok(window) = indicator else {
+        log::warn!("indicator window failed to create");
+        return;
+    };
+
+    log::info!("indicator window created");
+    let _ = window.set_always_on_top(true);
+
+    let window_handle = window.clone();
+    std::thread::spawn(move || {
+        let mut last_visible = false;
+        loop {
+            let state = ptt_handle.state();
+            let is_capturing = matches!(
+                state,
+                shared_types::PttState::Capturing | shared_types::PttState::Processing
+            );
+            if is_capturing != last_visible {
+                last_visible = is_capturing;
+                if is_capturing {
+                    let _ = window_handle.show();
+                } else {
+                    let _ = window_handle.hide();
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    });
+
+    if let Ok(monitor) = window.current_monitor() {
+        if let Some(monitor) = monitor {
+            let size = monitor.size();
+            let x = (size.width.saturating_sub(220)) / 2;
+            let y = size.height.saturating_sub(60);
+            let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+        }
+    }
+
+    if std::env::var("OPENWHISPERAI_INDICATOR_DEBUG")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        let _ = window.show();
+        let window_handle = window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let _ = window_handle.hide();
+        });
+    }
 }
 
 fn run_headless() {

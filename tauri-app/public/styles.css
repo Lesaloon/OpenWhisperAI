@@ -20,6 +20,21 @@
   --sans: "Space Grotesk", sans-serif;
 }
 
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #161515;
+  --bg-soft: #1f1b17;
+  --ink: #f1e7db;
+  --muted: #b0a395;
+  --brand: #f1c76a;
+  --brand-strong: #f8e0a2;
+  --accent: #e38a6a;
+  --accent-soft: #4a2d22;
+  --panel: #1b1816;
+  --border: #2b2520;
+  --shadow: 0 22px 45px rgba(0, 0, 0, 0.4);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -44,6 +59,10 @@ body {
   font-family: var(--sans);
 }
 
+[data-theme="dark"] body {
+  background: radial-gradient(circle at top left, #2a201a 0%, #161515 55%, #121010 100%);
+}
+
 .app {
   max-width: 1200px;
   margin: 0 auto;
@@ -60,6 +79,24 @@ body {
   align-items: flex-end;
   justify-content: space-between;
 }
+
+.theme-toggle {
+  border-radius: 999px;
+  border: 1px solid rgba(31, 75, 101, 0.2);
+  background: #fff;
+  color: var(--brand-strong);
+  padding: 10px 18px;
+  font-size: 13px;
+  font-family: var(--sans);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.theme-toggle:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(16, 45, 60, 0.15);
+}
+
 
 .eyebrow {
   letter-spacing: 0.12em;

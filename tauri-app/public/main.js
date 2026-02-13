@@ -8,6 +8,7 @@ const hotkeyInput = document.querySelector("#hotkeyInput");
 const applyHotkey = document.querySelector("#applyHotkey");
 const hotkeyPreview = document.querySelector("#hotkeyPreview");
 const outputMode = document.querySelector("#outputMode");
+const themeToggle = document.querySelector("#themeToggle");
 
 let invokeCommand = null;
 let pttState = "idle";
@@ -34,6 +35,18 @@ function setStatus(message) {
 function setPttStatus(text) {
   if (pttStatus) {
     pttStatus.textContent = `PTT: ${text}`;
+  }
+}
+
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (theme === "dark") {
+    root.setAttribute("data-theme", "dark");
+  } else {
+    root.removeAttribute("data-theme");
+  }
+  if (themeToggle) {
+    themeToggle.textContent = theme === "dark" ? "Light mode" : "Dark mode";
   }
 }
 
@@ -268,6 +281,17 @@ if (outputMode) {
     } catch (error) {
       setStatus("Output mode update failed");
     }
+  });
+}
+
+if (themeToggle) {
+  const storedTheme = localStorage.getItem("openwhisperai-theme");
+  const initialTheme = storedTheme === "dark" ? "dark" : "light";
+  applyTheme(initialTheme);
+  themeToggle.addEventListener("click", () => {
+    const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    applyTheme(next);
+    localStorage.setItem("openwhisperai-theme", next);
   });
 }
 

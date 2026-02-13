@@ -129,12 +129,7 @@ fn run_whisper_cli_with_bin(
         }
     }
 
-    let stdout_text = parse_cli_output(&String::from_utf8_lossy(&output.stdout));
-    if !stdout_text.is_empty() {
-        return Ok(stdout_text);
-    }
-    let stderr_text = parse_cli_output(&String::from_utf8_lossy(&output.stderr));
-    Ok(stderr_text)
+    Ok(String::new())
 }
 
 fn transcribe_with_cli(model_path: &Path, audio: &[f32]) -> Result<String, BindingError> {

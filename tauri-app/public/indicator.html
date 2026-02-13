@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenWhisperAI Indicator</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: transparent;
+        font-family: "Space Grotesk", sans-serif;
+      }
+      .indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 14px;
+        border-radius: 999px;
+        background: rgba(17, 14, 12, 0.92);
+        color: #fff;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        opacity: 1;
+        transform: translateY(0);
+        box-shadow: 0 14px 26px rgba(0, 0, 0, 0.35);
+      }
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #e38a6a;
+        box-shadow: 0 0 0 rgba(227, 138, 106, 0.5);
+        animation: pulse 1.1s ease infinite;
+      }
+      .text {
+        font-weight: 600;
+      }
+      @keyframes pulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(227, 138, 106, 0.6);
+        }
+        70% {
+          box-shadow: 0 0 0 8px rgba(227, 138, 106, 0);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(227, 138, 106, 0);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="indicator" id="indicator">
+      <span class="dot"></span>
+      <span class="text" id="indicatorText">Listening</span>
+    </div>
+    <script>
+      (async function () {
+        const tauri = window.__TAURI__;
+        let invoke = tauri?.core?.invoke ?? tauri?.invoke;
+        const appWindow = tauri?.window?.appWindow;
+        const fallbackIpc = typeof window.__TAURI_IPC__ === "function" ? window.__TAURI_IPC__ : null;
+
+        if (!invoke && fallbackIpc) {
+          const transformCallback = (callback, once = false) => {
+            const id = window.crypto?.getRandomValues
+              ? window.crypto.getRandomValues(new Uint32Array(1))[0]
+              : Math.floor(Math.random() * 1_000_000);
+            Object.defineProperty(window, `_${id}`, {
+              value: (response) => {
+                if (once) {
+                  Reflect.deleteProperty(window, `_${id}`);
+                }
+                callback?.(response);
+              },
+              writable: false,
+              configurable: true,
+            });
+            return id;
+          };
+
+          invoke = (command, payload = {}) =>
+            new Promise((resolve, reject) => {
+              const callback = transformCallback((value) => resolve(value), true);
+              const error = transformCallback((value) => reject(value), true);
+              fallbackIpc({ cmd: command, callback, error, ...payload });
+            });
+        }
+        const indicator = document.getElementById("indicator");
+
+        function normalizeState(payload) {
+          if (!payload) return "idle";
+          if (typeof payload === "string") return payload;
+          const keys = Object.keys(payload);
+          return keys[0] || "idle";
+        }
+
+        function setVisible(visible, stateLabel) {
+          if (indicator) indicator.classList.toggle("active", visible);
+          const text = document.getElementById("indicatorText");
+          if (text && stateLabel) text.textContent = stateLabel;
+          if (!appWindow) return;
+          if (visible) {
+            appWindow.show();
+          } else {
+            appWindow.hide();
+          }
+        }
+
+        if (!invoke || !appWindow) {
+          setVisible(false);
+          return;
+        }
+
+        const poll = async () => {
+          try {
+            const payload = await invoke("ipc_ptt_get_state");
+            const state = normalizeState(payload);
+            setVisible(state === "capturing" || state === "processing", state);
+          } catch (err) {
+            setVisible(false, "idle");
+          }
+        };
+
+        setInterval(poll, 300);
+        poll();
+      })();
+    </script>
+  </body>
+</html>
