@@ -1,6 +1,5 @@
 use log::warn;
 use std::env;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -50,36 +49,20 @@ fn parse_cli_output(output: &str) -> String {
 }
 
 fn write_wav(path: &Path, audio: &[f32]) -> Result<(), BindingError> {
-    let mut file = std::fs::File::create(path).map_err(|_| BindingError::InitFailed)?;
-    let data_len = (audio.len() * 2) as u32;
-    let chunk_size = 36 + data_len;
-    file.write_all(b"RIFF")
-        .and_then(|_| file.write_all(&chunk_size.to_le_bytes()))
-        .and_then(|_| file.write_all(b"WAVE"))
-        .and_then(|_| file.write_all(b"fmt "))
-        .and_then(|_| file.write_all(&16u32.to_le_bytes()))
-        .and_then(|_| file.write_all(&1u16.to_le_bytes()))
-        .and_then(|_| file.write_all(&1u16.to_le_bytes()))
-        .and_then(|_| file.write_all(&WHISPER_SAMPLE_RATE.to_le_bytes()))
-        .and_then(|_| {
-            let byte_rate = WHISPER_SAMPLE_RATE * u32::from(WHISPER_BITS_PER_SAMPLE / 8);
-            file.write_all(&byte_rate.to_le_bytes())
-        })
-        .and_then(|_| {
-            let block_align = (WHISPER_BITS_PER_SAMPLE / 8) as u16;
-            file.write_all(&block_align.to_le_bytes())
-        })
-        .and_then(|_| file.write_all(&WHISPER_BITS_PER_SAMPLE.to_le_bytes()))
-        .and_then(|_| file.write_all(b"data"))
-        .and_then(|_| file.write_all(&data_len.to_le_bytes()))
-        .map_err(|_| BindingError::InitFailed)?;
-
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: WHISPER_SAMPLE_RATE,
+        bits_per_sample: WHISPER_BITS_PER_SAMPLE,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(path, spec).map_err(|_| BindingError::InitFailed)?;
     for sample in audio {
         let scaled = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-        file.write_all(&scaled.to_le_bytes())
+        writer
+            .write_sample(scaled)
             .map_err(|_| BindingError::InitFailed)?;
     }
-    Ok(())
+    writer.finalize().map_err(|_| BindingError::InitFailed)
 }
 
 fn run_whisper_cli_with_bin(
@@ -112,6 +95,8 @@ fn run_whisper_cli_with_bin(
         .arg(model_path)
         .arg("-f")
         .arg(&wav_path)
+        .arg("-l")
+        .arg("auto")
         .arg("-otxt")
         .arg("-of")
         .arg(&output_prefix)

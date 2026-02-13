@@ -110,6 +110,10 @@ h1 {
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 }
 
+.grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -155,6 +159,69 @@ h1 {
   gap: 18px;
 }
 
+.control-buttons {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.button {
+  border: 1px solid rgba(31, 75, 101, 0.2);
+  background: #fff;
+  color: var(--brand-strong);
+  padding: 12px 18px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-family: var(--sans);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(16, 45, 60, 0.12);
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: default;
+  box-shadow: none;
+}
+
+.button.primary {
+  background: var(--brand);
+  color: #fff;
+  border-color: transparent;
+}
+
+.button.ghost {
+  background: var(--accent-soft);
+  color: var(--brand-strong);
+  border-color: rgba(217, 114, 87, 0.35);
+}
+
+.hotkey-row-simple {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.input {
+  flex: 1;
+  min-width: 220px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: #fff;
+  font-family: var(--mono);
+}
+
+.hotkey-preview {
+  font-size: 13px;
+  color: var(--muted);
+}
+
 .setting-row {
   display: flex;
   align-items: center;
@@ -195,6 +262,8 @@ h1 {
 .segmented button:focus-visible,
 .overlay-header button:focus-visible,
 .model-action:focus-visible,
+.button:focus-visible,
+.input:focus-visible,
 .toggle input:focus-visible + .toggle-track {
   outline: 3px solid rgba(31, 75, 101, 0.35);
   outline-offset: 3px;

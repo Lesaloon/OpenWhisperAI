@@ -1,6 +1,7 @@
 use crate::audio::{AudioBackend, AudioCaptureService, AudioError};
 use crate::hotkeys::{HotkeyActionEvent, HotkeyState};
 use crate::meter::{LevelMeter, LevelReading};
+use log::info;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc, Mutex,
@@ -49,6 +50,7 @@ impl<B: AudioBackend> PttCaptureService<B> {
     }
 
     pub fn start(&mut self) -> Result<(), PttCaptureError> {
+        info!("ptt capture start requested");
         self.capture_active.store(false, Ordering::SeqCst);
         {
             let mut buffer = self
@@ -83,20 +85,28 @@ impl<B: AudioBackend> PttCaptureService<B> {
                     }
                 }
             })
-            .map_err(PttCaptureError::from)
+            .map_err(PttCaptureError::from)?;
+        info!("ptt capture started");
+        Ok(())
     }
 
     pub fn stop(&mut self) -> Result<(), PttCaptureError> {
+        info!("ptt capture stop requested");
         self.capture_active.store(false, Ordering::SeqCst);
-        self.audio.stop().map_err(PttCaptureError::from)
+        self.audio.stop().map_err(PttCaptureError::from)?;
+        info!("ptt capture stopped");
+        Ok(())
     }
 
     pub fn take_audio(&self) -> Result<Vec<f32>, PttCaptureError> {
+        info!("ptt capture take audio");
         let mut buffer = self
             .buffer
             .lock()
             .map_err(|_| PttCaptureError::BufferLockPoisoned)?;
-        Ok(std::mem::take(&mut *buffer))
+        let data = std::mem::take(&mut *buffer);
+        info!("ptt capture took {} samples", data.len());
+        Ok(data)
     }
 
     pub fn level_feed(&mut self) -> Option<mpsc::Receiver<LevelReading>> {
@@ -121,6 +131,7 @@ impl<B: AudioBackend> PttCaptureService<B> {
 
         match event.state {
             HotkeyState::Pressed => {
+                info!("ptt capture hotkey pressed");
                 self.capture_active.store(true, Ordering::SeqCst);
                 let mut buffer = self
                     .buffer
@@ -129,6 +140,7 @@ impl<B: AudioBackend> PttCaptureService<B> {
                 buffer.clear();
             }
             HotkeyState::Released => {
+                info!("ptt capture hotkey released");
                 self.capture_active.store(false, Ordering::SeqCst);
             }
         }

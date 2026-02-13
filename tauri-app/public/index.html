@@ -11,188 +11,42 @@
       <header class="hero">
         <div>
           <p class="eyebrow">OpenWhisperAI</p>
-          <h1>Studio-grade controls for whisper workflows.</h1>
-          <p class="subtitle">
-            Tune input capture, overlay behavior, model downloads, and hotkeys in one place.
-          </p>
+          <h1>Push-to-talk dictation.</h1>
+          <p class="subtitle">Record, stop, and adjust the hotkey. Nothing else.</p>
           <div class="chip" id="uiBuild">UI build: pending</div>
           <div class="chip" id="ipcStatus">IPC: unknown</div>
-          <div class="chip" id="ipcDetails">IPC details: -</div>
-        </div>
-          <div class="hero-card">
-            <div class="hero-stat">
-              <span>Active model</span>
-              <strong id="activeModelValue">None</strong>
-            </div>
-            <div class="hero-stat">
-              <span>Queue</span>
-              <strong id="queueValue">0 downloads</strong>
-            </div>
-          <div class="hero-stat">
-            <span>Overlay</span>
-            <strong>Live preview</strong>
-          </div>
+          <div class="chip" id="pttStatus">PTT: idle</div>
         </div>
       </header>
 
-      <main class="grid">
-        <section class="panel" id="settings">
+      <main class="grid single">
+        <section class="panel" id="recording">
           <div class="panel-header">
-            <h2>Recording Settings</h2>
-            <p>Balance accuracy, speed, and interface behavior.</p>
+            <h2>Recording</h2>
+            <p id="recordingHint">Press the hotkey to start/stop.</p>
           </div>
           <div class="panel-body">
-            <div class="setting-row">
-              <div>
-                <h3 id="inputDeviceLabel">Input Device</h3>
-                <p>Choose the microphone or audio bus to monitor.</p>
-              </div>
-              <select class="select" id="inputDevice" aria-labelledby="inputDeviceLabel">
-                <option>Studio Mic (USB)</option>
-                <option>Desk Mic (Line-in)</option>
-                <option>Virtual Audio Cable</option>
-              </select>
-            </div>
-            <div class="setting-row">
-              <div>
-                <h3 id="noiseReductionLabel">Noise Reduction</h3>
-                <p>Reduce ambient noise before transcription.</p>
-              </div>
-              <label class="toggle">
-                <input type="checkbox" id="noiseReduction" checked aria-labelledby="noiseReductionLabel" />
-                <span class="toggle-track"></span>
-              </label>
-            </div>
-            <div class="setting-row">
-              <div>
-                <h3 id="autoLanguageLabel">Automatic Language Detect</h3>
-                <p>Let the model detect the language on the fly.</p>
-              </div>
-              <label class="toggle">
-                <input type="checkbox" id="autoLanguage" aria-labelledby="autoLanguageLabel" />
-                <span class="toggle-track"></span>
-              </label>
-            </div>
-            <div class="setting-row">
-              <div>
-                <h3 id="latencyLabel">Streaming Latency</h3>
-                <p>Trade precision for faster live results.</p>
-              </div>
-              <div class="slider">
-                <input
-                  type="range"
-                  id="latency"
-                  min="200"
-                  max="1200"
-                  step="100"
-                  value="600"
-                  aria-labelledby="latencyLabel"
-                  aria-describedby="latencyValue"
-                />
-                <span class="slider-value" id="latencyValue" aria-live="polite">600ms</span>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div>
-                <h3 id="autoExportLabel">Auto Export</h3>
-                <p>Push completed sessions to your export folder.</p>
-              </div>
-              <label class="toggle">
-                <input type="checkbox" id="autoExport" checked aria-labelledby="autoExportLabel" />
-                <span class="toggle-track"></span>
-              </label>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel overlay" id="overlay">
-          <div class="panel-header">
-            <h2>Overlay Preview</h2>
-            <p>Design the floating transcript overlay.</p>
-          </div>
-          <div class="panel-body">
-            <div class="overlay-preview">
-              <div class="overlay-header">
-                <div class="pulse"></div>
-                <div>
-                  <h3>Live Transcript</h3>
-                  <p id="overlayStatus" aria-live="polite">Listening · English</p>
-                </div>
-                <button class="chip" id="overlayMode">Docked</button>
-              </div>
-              <div class="overlay-body" id="overlayBody">
-                <p><span class="time">00:12</span> The agenda for today includes the product launch timeline.</p>
-                <p><span class="time">00:18</span> We will share an early demo right after the Q2 recap.</p>
-                <p class="muted"><span class="time">00:27</span> Capture summary enabled.</p>
-              </div>
-              <div class="overlay-footer">
-                <button class="chip" id="pttManual" type="button" aria-pressed="false" onclick="document.getElementById('overlayBody').textContent='PTT inline clicked'">Start PTT</button>
-                <button class="chip" id="helloButton" type="button" onclick="document.getElementById('overlayBody').textContent='Hello inline clicked'">Hello</button>
-                <span class="badge" id="overlayHint" aria-live="polite">Auto punctuation on</span>
-                <span class="badge">Auto highlight keywords</span>
-                <span class="sr-only" id="backendLog" aria-live="polite"></span>
-              </div>
+            <div class="control-buttons">
+              <button class="button primary" id="startRecording" type="button">Start Recording</button>
+              <button class="button ghost" id="stopRecording" type="button" disabled>Stop Recording</button>
             </div>
             <div class="transcript-output" id="transcriptOutput" aria-live="polite">
               Latest transcript will appear here.
             </div>
-            <div class="setting-row compact">
-              <div>
-                <h3 id="overlayPositionLabel">Overlay Position</h3>
-                <p>Move the overlay to match your workflow.</p>
-              </div>
-              <div class="segmented" id="overlayPosition" role="group" aria-labelledby="overlayPositionLabel">
-                <button class="active" data-value="Docked" type="button" aria-pressed="true">Docked</button>
-                <button data-value="Floating" type="button" aria-pressed="false">Floating</button>
-                <button data-value="Compact" type="button" aria-pressed="false">Compact</button>
-              </div>
-            </div>
-            <div class="setting-row compact">
-              <div>
-                <h3 id="showTimestampsLabel">Show Timestamps</h3>
-                <p>Display live timing next to each phrase.</p>
-              </div>
-              <label class="toggle">
-                <input type="checkbox" id="showTimestamps" checked aria-labelledby="showTimestampsLabel" />
-                <span class="toggle-track"></span>
-              </label>
-            </div>
-            <div class="setting-row compact">
-              <div>
-                <h3 id="autoPunctuationLabel">Auto Punctuation</h3>
-                <p>Automatically insert punctuation for readability.</p>
-              </div>
-              <label class="toggle">
-                <input type="checkbox" id="autoPunctuation" checked aria-labelledby="autoPunctuationLabel" />
-                <span class="toggle-track"></span>
-              </label>
-            </div>
           </div>
         </section>
 
-        <section class="panel" id="downloads">
+        <section class="panel" id="hotkey">
           <div class="panel-header">
-            <h2>Model Downloads</h2>
-            <p>Track local model availability and download health.</p>
+            <h2>Push-to-talk Hotkey</h2>
+            <p>Click the field and press the shortcut. On Hyprland, use the setup script to bind it globally.</p>
           </div>
           <div class="panel-body">
-            <div class="model-list" id="modelList"></div>
-          </div>
-        </section>
-
-        <section class="panel" id="hotkeys">
-          <div class="panel-header">
-            <h2>Hotkeys</h2>
-            <p>Quick shortcuts for capture, overlay, and export.</p>
-          </div>
-          <div class="panel-body">
-            <div class="hotkey-search">
-              <label class="sr-only" for="hotkeySearch">Search hotkeys</label>
-              <input type="search" placeholder="Search hotkeys" id="hotkeySearch" />
-              <span class="chip">macOS</span>
-              <span class="chip">Windows</span>
+            <div class="hotkey-row-simple">
+              <input class="input" id="hotkeyInput" type="text" placeholder="Press shortcut" readonly />
+              <button class="button" id="applyHotkey" type="button">Apply Hotkey</button>
             </div>
-            <div class="hotkey-list" id="hotkeyList"></div>
+            <div class="hotkey-preview" id="hotkeyPreview">Current: Ctrl + Alt + Space</div>
           </div>
         </section>
       </main>
@@ -202,31 +56,18 @@
         var stamp = new Date().toISOString();
         var uiBuild = document.getElementById("uiBuild");
         if (uiBuild) uiBuild.textContent = "UI build: " + stamp;
-        var overlayBody = document.getElementById("overlayBody");
-        if (overlayBody) {
-          overlayBody.innerHTML = "<p class=\"muted\">UI booted: " + stamp + "</p>";
-        }
-        var ipcDetails = document.getElementById("ipcDetails");
-        if (ipcDetails) {
-          var tauri = window.__TAURI__;
-          var hasIpc = typeof window.__TAURI_IPC__ === "function";
-          var keys = tauri ? Object.keys(tauri).join(",") : "-";
-          ipcDetails.textContent = "IPC details: tauri=" + Boolean(tauri) + ", ipc=" + hasIpc + ", keys=" + keys;
-        }
       })();
     </script>
     <script>
       (async function () {
-        var overlayBody = document.getElementById("overlayBody");
+        var hint = document.getElementById("recordingHint");
         try {
           await import("./main.js");
-          if (overlayBody) {
-            overlayBody.innerHTML = "<p class=\"muted\">main.js loaded</p>";
-          }
+          if (hint) hint.textContent = "UI ready";
         } catch (err) {
-          if (overlayBody) {
-            overlayBody.innerHTML =
-              "<p class=\"muted\">main.js failed: " + (err && err.message ? err.message : err) + "</p>";
+          if (hint) {
+            hint.textContent =
+              "main.js failed: " + (err && err.message ? err.message : err);
           }
         }
       })();

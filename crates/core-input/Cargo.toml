@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 cpal = "0.15"
+log = "0.4"
 rdev = "0.5"
 thiserror = "1.0"
 

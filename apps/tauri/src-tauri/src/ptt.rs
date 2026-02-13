@@ -60,9 +60,6 @@ enum PttRuntimeCommand {
 
 impl PttHandle {
     pub fn new(model_root: PathBuf, models: Arc<Mutex<crate::state::ModelStore>>) -> Self {
-        if matches!(std::env::var("XDG_SESSION_TYPE").as_deref(), Ok("wayland")) {
-            warn!("Wayland session detected: global hotkeys may not work (try X11)");
-        }
         let (sender, receiver) = mpsc::channel();
         let state = Arc::new(Mutex::new(PttState::Idle));
         let state_handle = Arc::clone(&state);
@@ -375,6 +372,7 @@ pub struct PttController<B: AudioBackend> {
     hotkey_manager: Arc<Mutex<HotkeyManager>>,
     hotkey_listener: Option<HotkeyListenerHandle>,
     hotkey_receiver: Option<mpsc::Receiver<HotkeyActionEvent>>,
+    allow_global_hotkeys: bool,
     runtime_started: bool,
     level_receiver: Option<mpsc::Receiver<LevelReading>>,
     capture: PttCaptureService<B>,
@@ -401,6 +399,14 @@ impl<B: AudioBackend> PttController<B> {
         model_root: PathBuf,
         models: Arc<Mutex<crate::state::ModelStore>>,
     ) -> Self {
+        let disable_hotkeys = std::env::var("OPENWHISPERAI_DISABLE_GLOBAL_HOTKEYS")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let wayland = matches!(std::env::var("XDG_SESSION_TYPE").as_deref(), Ok("wayland"));
+        let allow_global_hotkeys = !disable_hotkeys && !wayland;
+        if wayland {
+            warn!("Wayland session detected: global hotkeys are disabled (use Hyprland binding)");
+        }
         let hotkey = PttHotkeyPayload::default().to_hotkey().unwrap_or(Hotkey {
             key: HotkeyKey::F9,
             modifiers: HotkeyModifiers::none(),
@@ -416,6 +422,7 @@ impl<B: AudioBackend> PttController<B> {
             hotkey_manager: Arc::new(Mutex::new(manager)),
             hotkey_listener: None,
             hotkey_receiver: None,
+            allow_global_hotkeys,
             runtime_started: false,
             level_receiver: None,
             capture: PttCaptureService::new(backend, "ptt"),
@@ -520,7 +527,7 @@ impl<B: AudioBackend> PttController<B> {
             return Ok(());
         }
 
-        if self.hotkey_receiver.is_none() {
+        if self.allow_global_hotkeys && self.hotkey_receiver.is_none() {
             let listener = GlobalHotkeyListener::new(Arc::clone(&self.hotkey_manager));
             let (handle_listener, receiver) = listener.start().map_err(|err| err.to_string())?;
             self.hotkey_listener = Some(handle_listener);
@@ -603,12 +610,22 @@ impl<B: AudioBackend> PttController<B> {
         if event.action != "ptt" {
             return Ok(None);
         }
-        info!("ptt hotkey {:?}", event.state);
+        let mut effective_state = event.state;
+        if matches!(event.state, HotkeyState::Pressed) && self.state == PttState::Capturing {
+            warn!("ptt release not detected; treating press as release");
+            effective_state = HotkeyState::Released;
+        }
+        info!("ptt hotkey {:?}", effective_state);
+        let effective_event = HotkeyActionEvent {
+            action: event.action.clone(),
+            hotkey: event.hotkey.clone(),
+            state: effective_state,
+        };
         self.capture
-            .handle_hotkey_action(event)
+            .handle_hotkey_action(&effective_event)
             .map_err(|err| err.to_string())?;
 
-        match event.state {
+        match effective_state {
             HotkeyState::Pressed => {
                 self.set_state(PttState::Capturing);
                 Ok(None)
@@ -635,6 +652,10 @@ impl<B: AudioBackend> PttController<B> {
     }
 
     fn manual_toggle_recording(&mut self) -> Result<PttState, String> {
+        log::info!("manual toggle requested (state={:?})", self.state);
+        if self.state == PttState::Processing {
+            return Ok(self.state.clone());
+        }
         if !self.armed {
             let settings = self.settings.clone();
             let active_model = self.active_model.clone();
@@ -662,6 +683,7 @@ impl<B: AudioBackend> PttController<B> {
             self.complete_transcription(transcription);
         }
 
+        log::info!("manual toggle finished (state={:?})", self.state);
         Ok(self.state.clone())
     }
 
