@@ -64,13 +64,16 @@ fn main() {
             if let Some(dir) = app.path_resolver().app_data_dir() {
                 write_pid_file(&dir);
             }
+            let initial_settings = app_state.lock_orchestrator().settings();
+            app_state
+                .ptt_handle()
+                .update_settings(initial_settings.clone());
             let auto_start = std::env::var("OPENWHISPERAI_PTT_AUTOSTART")
                 .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
             if auto_start {
-                let settings = app_state.lock_orchestrator().settings();
                 let active_model = app_state.lock_models().snapshot().active_model;
-                if let Err(err) = app_state.ptt_handle().start(settings, active_model) {
+                if let Err(err) = app_state.ptt_handle().start(initial_settings, active_model) {
                     log::warn!("failed to auto-start ptt: {err}");
                 } else {
                     log::info!("ptt auto-started");
@@ -150,14 +153,17 @@ fn run_headless() {
     let app_state = state::AppState::new(settings_path, model_root);
     spawn_signal_listener(app_state.ptt_handle());
     control_server::start(app_state.ptt_handle());
+    let initial_settings = app_state.lock_orchestrator().settings();
+    app_state
+        .ptt_handle()
+        .update_settings(initial_settings.clone());
 
     let auto_start = std::env::var("OPENWHISPERAI_PTT_AUTOSTART")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     if auto_start {
-        let settings = app_state.lock_orchestrator().settings();
         let active_model = app_state.lock_models().snapshot().active_model;
-        if let Err(err) = app_state.ptt_handle().start(settings, active_model) {
+        if let Err(err) = app_state.ptt_handle().start(initial_settings, active_model) {
             log::warn!("failed to auto-start ptt: {err}");
         } else {
             log::info!("ptt auto-started");

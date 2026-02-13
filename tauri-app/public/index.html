@@ -30,6 +30,17 @@
               <button class="button primary" id="startRecording" type="button">Start Recording</button>
               <button class="button ghost" id="stopRecording" type="button" disabled>Stop Recording</button>
             </div>
+            <div class="setting-row compact">
+              <div>
+                <h3 id="outputModeLabel">Output Mode</h3>
+                <p>Choose where the transcript is sent.</p>
+              </div>
+              <select class="select" id="outputMode" aria-labelledby="outputModeLabel">
+                <option value="ui_only">UI only</option>
+                <option value="clipboard">Clipboard</option>
+                <option value="direct_write">Direct write</option>
+              </select>
+            </div>
             <div class="transcript-output" id="transcriptOutput" aria-live="polite">
               Latest transcript will appear here.
             </div>

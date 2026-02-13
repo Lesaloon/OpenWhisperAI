@@ -7,7 +7,8 @@ use core_input::{
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use shared_types::{
-    AppSettings, ModelInstallStatus, ModelStatusItem, ModelStatusPayload, PttLevel, PttState,
+    AppSettings, ModelInstallStatus, ModelStatusItem, ModelStatusPayload, OutputMode, PttLevel,
+    PttState,
 };
 use std::{
     collections::HashMap,
@@ -236,6 +237,26 @@ impl TextInjector for ClipboardInjector {
     }
 }
 
+pub struct ClipboardOnlyInjector;
+
+impl TextInjector for ClipboardOnlyInjector {
+    fn inject(&self, text: &str) -> Result<(), String> {
+        let mut clipboard = arboard::Clipboard::new().map_err(|err| err.to_string())?;
+        clipboard
+            .set_text(text.to_string())
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+}
+
+pub struct DirectWriteInjector;
+
+impl TextInjector for DirectWriteInjector {
+    fn inject(&self, text: &str) -> Result<(), String> {
+        type_text(text)
+    }
+}
+
 enum PasteCommandError {
     NotFound,
     Failed(String),
@@ -270,6 +291,87 @@ fn paste_from_clipboard() -> Result<(), String> {
     {
         Err("text injection is only supported on Linux via xdotool or wtype".to_string())
     }
+}
+
+fn type_text(text: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let mut missing = Vec::new();
+        for (cmd, args) in type_command_candidates(wayland, text) {
+            log::info!("direct write using {cmd}");
+            match run_type_command(cmd, args) {
+                Ok(()) => return Ok(()),
+                Err(PasteCommandError::NotFound) => missing.push(cmd),
+                Err(PasteCommandError::Failed(message)) => return Err(message),
+            }
+        }
+        let helper_hint = if wayland {
+            "wtype (Wayland) or xdotool (X11)"
+        } else {
+            "xdotool (X11) or wtype (Wayland)"
+        };
+        Err(format!(
+            "missing typing helper: install {} to enable direct write",
+            helper_hint
+        ))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("direct write is only supported on Linux via xdotool or wtype".to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn type_command_candidates(wayland: bool, text: &str) -> Vec<(&'static str, Vec<String>)> {
+    if wayland {
+        vec![
+            ("wtype", vec!["--".to_string(), text.to_string()]),
+            (
+                "xdotool",
+                vec![
+                    "type".to_string(),
+                    "--clearmodifiers".to_string(),
+                    text.to_string(),
+                ],
+            ),
+        ]
+    } else {
+        vec![
+            (
+                "xdotool",
+                vec![
+                    "type".to_string(),
+                    "--clearmodifiers".to_string(),
+                    text.to_string(),
+                ],
+            ),
+            ("wtype", vec!["--".to_string(), text.to_string()]),
+        ]
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_type_command(cmd: &str, args: Vec<String>) -> Result<(), PasteCommandError> {
+    let output = Command::new(cmd).args(&args).output().map_err(|err| {
+        if err.kind() == ErrorKind::NotFound {
+            return PasteCommandError::NotFound;
+        }
+        PasteCommandError::Failed(err.to_string())
+    })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(PasteCommandError::Failed(format!(
+        "command `{}` exited with {}: {}",
+        cmd,
+        output.status,
+        stderr.trim()
+    )))
 }
 
 #[cfg(target_os = "linux")]
@@ -560,8 +662,8 @@ impl<B: AudioBackend> PttController<B> {
                     if let Some(work) = work {
                         let transcription = work.transcriber.transcribe(&work.audio);
                         if let Ok(text) = &transcription {
-                            if work.auto_export && !text.is_empty() {
-                                let _ = work.injector.inject(text);
+                            if let Err(err) = self.handle_output(&work.output_mode, text) {
+                                self.emit_output_warning(&err);
                             }
                         }
                         self.complete_transcription(transcription);
@@ -645,7 +747,7 @@ impl<B: AudioBackend> PttController<B> {
                     audio,
                     transcriber: Arc::clone(&self.transcriber),
                     injector: Arc::clone(&self.injector),
-                    auto_export: self.settings.auto_export,
+                    output_mode: self.settings.output_mode.clone(),
                 }))
             }
         }
@@ -676,8 +778,8 @@ impl<B: AudioBackend> PttController<B> {
         if let Some(work) = work {
             let transcription = work.transcriber.transcribe(&work.audio);
             if let Ok(text) = &transcription {
-                if work.auto_export && !text.is_empty() {
-                    let _ = work.injector.inject(text);
+                if let Err(err) = self.handle_output(&work.output_mode, text) {
+                    self.emit_output_warning(&err);
                 }
             }
             self.complete_transcription(transcription);
@@ -777,13 +879,38 @@ impl<B: AudioBackend> PttController<B> {
             }
         }
     }
+
+    fn handle_output(&self, mode: &OutputMode, text: &str) -> Result<(), String> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        match mode {
+            OutputMode::UiOnly => Ok(()),
+            OutputMode::Clipboard => ClipboardOnlyInjector.inject(text),
+            OutputMode::DirectWrite => match DirectWriteInjector.inject(text) {
+                Ok(()) => {
+                    log::info!("direct write succeeded");
+                    Ok(())
+                }
+                Err(err) => {
+                    let _ = ClipboardOnlyInjector.inject(text);
+                    Err(format!("direct write failed; copied to clipboard: {err}"))
+                }
+            },
+        }
+    }
+
+    fn emit_output_warning(&self, message: &str) {
+        warn!("output warning: {message}");
+        emit_app_event(PTT_ERROR_EVENT, &message.to_string());
+    }
 }
 
 struct TranscriptionWork {
     audio: Vec<f32>,
     transcriber: Arc<dyn Transcriber>,
     injector: Arc<dyn TextInjector>,
-    auto_export: bool,
+    output_mode: OutputMode,
 }
 
 fn resample_to_16k_mono(audio: Vec<f32>, sample_rate: u32, channels: u16) -> Vec<f32> {
@@ -1257,14 +1384,10 @@ mod tests {
             .transcriber
             .transcribe(&work.audio)
             .expect("transcribe");
-        if work.auto_export {
-            work.injector.inject(&text).expect("inject");
-        }
+        controller.handle_output(&OutputMode::UiOnly, &text);
 
-        let injected = inject_rx
-            .recv_timeout(Duration::from_millis(50))
-            .expect("inject event");
-        assert_eq!(injected, "hello world");
+        let injected = inject_rx.recv_timeout(Duration::from_millis(50));
+        assert!(injected.is_err());
     }
 
     #[test]

@@ -56,6 +56,15 @@ pub enum PttEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum OutputMode {
+    #[default]
+    UiOnly,
+    Clipboard,
+    DirectWrite,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum ModelInstallStatus {
     Ready,
     Installed,
@@ -114,6 +123,8 @@ pub struct AppSettings {
     pub auto_language: bool,
     pub latency_ms: u16,
     pub auto_export: bool,
+    #[serde(default)]
+    pub output_mode: OutputMode,
     pub overlay_position: OverlayPosition,
     pub show_timestamps: bool,
     pub auto_punctuation: bool,
@@ -127,6 +138,7 @@ impl Default for AppSettings {
             auto_language: false,
             latency_ms: 600,
             auto_export: true,
+            output_mode: OutputMode::Clipboard,
             overlay_position: OverlayPosition::Docked,
             show_timestamps: true,
             auto_punctuation: true,
@@ -148,6 +160,8 @@ pub struct SettingsUpdate {
     #[serde(default)]
     pub auto_export: Option<bool>,
     #[serde(default)]
+    pub output_mode: Option<OutputMode>,
+    #[serde(default)]
     pub overlay_position: Option<OverlayPosition>,
     #[serde(default)]
     pub show_timestamps: Option<bool>,
@@ -165,6 +179,9 @@ impl AppSettings {
             auto_language: update.auto_language.unwrap_or(self.auto_language),
             latency_ms: update.latency_ms.unwrap_or(self.latency_ms),
             auto_export: update.auto_export.unwrap_or(self.auto_export),
+            output_mode: update
+                .output_mode
+                .unwrap_or_else(|| self.output_mode.clone()),
             overlay_position: update
                 .overlay_position
                 .unwrap_or_else(|| self.overlay_position.clone()),

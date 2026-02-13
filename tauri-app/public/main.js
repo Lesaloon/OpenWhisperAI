@@ -7,6 +7,7 @@ const pttStatus = document.querySelector("#pttStatus");
 const hotkeyInput = document.querySelector("#hotkeyInput");
 const applyHotkey = document.querySelector("#applyHotkey");
 const hotkeyPreview = document.querySelector("#hotkeyPreview");
+const outputMode = document.querySelector("#outputMode");
 
 let invokeCommand = null;
 let pttState = "idle";
@@ -201,6 +202,10 @@ async function initializeBackendBridge() {
   try {
     const ptt = await invoke("ipc_ptt_get_state");
     applyPttState(ptt);
+    const settings = await invoke("ipc_get_settings");
+    if (outputMode && settings?.output_mode) {
+      outputMode.value = settings.output_mode;
+    }
   } catch (error) {
     setStatus("Backend unavailable");
   }
@@ -247,6 +252,21 @@ if (applyHotkey) {
       setStatus("Hotkey updated");
     } catch (error) {
       setStatus("Hotkey update failed");
+    }
+  });
+}
+
+if (outputMode) {
+  outputMode.addEventListener("change", async () => {
+    if (!invokeCommand) {
+      setStatus("IPC unavailable");
+      return;
+    }
+    try {
+      await invokeCommand("ipc_update_settings", { update: { output_mode: outputMode.value } });
+      setStatus("Output mode updated");
+    } catch (error) {
+      setStatus("Output mode update failed");
     }
   });
 }
